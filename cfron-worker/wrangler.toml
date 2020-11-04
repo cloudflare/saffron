@@ -1,0 +1,12 @@
+name = "cron-triggers-dev"
+type = "rust"
+
+account_id = "615f1f0479e7014f0bebcd10d379f10e"
+workers_dev = true
+vars = { env = "dev" }
+
+[env.production]
+name = "cron-triggers"
+vars = { env = "production" }
+zone_id = "78d4687c15196489e76b228c6056168c"
+route = "cron-triggers.cloudflareworkers.com/*"
