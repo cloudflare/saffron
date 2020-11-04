@@ -69,7 +69,7 @@ pub fn describe(cron: &str) -> DescriptionResult {
 
     match cron.parse::<CronExpr>() {
         Ok(expr) => {
-            let compiled = Cron::new(expr).expect("Parsed valid cron expression");
+            let compiled = Cron::new(expr);
             let est_future_executions = compiled.iter_from(Utc::now()).take(5).collect();
 
             DescriptionResult {

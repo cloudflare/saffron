@@ -362,8 +362,6 @@ impl<E: ExprValue> TryFrom<u8> for Step<E> {
 pub enum DayOfWeekExpr {
     /// A '*' character
     All,
-    /// A '?' character. Functionally equivalent to `All`, only used if DayOfMonth is specified
-    Any,
     /// A `L` character, the last day of the week for the month, paired with a value
     Last(DayOfWeek),
     /// A '#' character
@@ -396,8 +394,6 @@ pub enum Last {
 pub enum DayOfMonthExpr {
     /// A '*' character
     All,
-    /// A '?' character. Functionally equivalent to `All`, only used if DayOfWeek is specified
-    Any,
     /// An expression containing an 'L' character.
     Last(Last),
     /// A 'W' expression, used to mean the closest weekday to the specified day of the month
@@ -505,19 +501,6 @@ pub struct CronExpr {
     pub months: Expr<Month>,
     /// The day of the week part of the expression.
     pub dows: DayOfWeekExpr,
-}
-
-impl CronExpr {
-    pub fn is_valid(&self) -> bool {
-        match (&self.doms, &self.dows) {
-            (DayOfMonthExpr::Any, DayOfWeekExpr::Any) => false,
-            (DayOfMonthExpr::All, _)
-            | (_, DayOfWeekExpr::All)
-            | (DayOfMonthExpr::Any, _)
-            | (_, DayOfWeekExpr::Any) => true,
-            _ => false,
-        }
-    }
 }
 
 /// An error indicating that the provided cron expression failed to parse
@@ -690,7 +673,7 @@ fn hours_expr(s: &str) -> IResult<&str, Expr<Hour>> {
 fn dom_expr(input: &str) -> IResult<&str, DayOfMonthExpr> {
     let dom = map_digit1::<DayOfMonth>();
 
-    let (input, start) = opt(alt((char('*'), char('?'), char('L'))))(input)?;
+    let (input, start) = opt(alt((char('*'), char('L'))))(input)?;
     match start {
         Some('*') => {
             let (input, maybe_step) = opt(tuple((char('/'), step_digit::<DayOfMonth>())))(input)?;
@@ -708,7 +691,6 @@ fn dom_expr(input: &str) -> IResult<&str, DayOfMonthExpr> {
                 Ok((input, DayOfMonthExpr::All))
             }
         }
-        Some('?') => Ok((input, DayOfMonthExpr::Any)),
         Some('L') => {
             let (input, modifier) = opt(alt((char('-'), char('W'))))(input)?;
             match modifier {
@@ -791,7 +773,7 @@ fn dow_expr(input: &str) -> IResult<&str, DayOfWeekExpr> {
         ))(s)
     }
 
-    let (input, start) = opt(alt((char('*'), char('?'), char('L'))))(input)?;
+    let (input, start) = opt(alt((char('*'), char('L'))))(input)?;
 
     match start {
         Some('*') => {
@@ -809,7 +791,6 @@ fn dow_expr(input: &str) -> IResult<&str, DayOfWeekExpr> {
                 Ok((input, DayOfWeekExpr::All))
             }
         }
-        Some('?') => Ok((input, DayOfWeekExpr::Any)),
         Some('L') => Ok((
             input,
             DayOfWeekExpr::Many(Exprs::new(OrsExpr::One(DayOfWeek(chrono::Weekday::Sat)))),
@@ -891,11 +872,7 @@ impl FromStr for CronExpr {
         ))(s)
         .map_err(|_| CronParseError(()))?;
 
-        if expr.is_valid() {
-            Ok(expr)
-        } else {
-            Err(CronParseError(()))
-        }
+        Ok(expr)
     }
 }
 
@@ -1465,11 +1442,6 @@ mod tests {
         }
 
         #[test]
-        fn any() {
-            assert_eq!(dom_expr("?"), Ok(("", DayOfMonthExpr::Any)))
-        }
-
-        #[test]
         fn last() {
             assert_eq!(dom_expr("L"), Ok(("", DayOfMonthExpr::Last(Last::Day))))
         }
@@ -1700,11 +1672,6 @@ mod tests {
             // make sure we only match the first star.
             // it'll fail on the next parser
             assert_eq!(dow_expr("*,*"), Ok((",*", DayOfWeekExpr::All)))
-        }
-
-        #[test]
-        fn any() {
-            assert_eq!(dow_expr("?"), Ok(("", DayOfWeekExpr::Any)))
         }
 
         #[test]

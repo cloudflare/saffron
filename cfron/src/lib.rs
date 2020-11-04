@@ -5,7 +5,7 @@ pub mod parse;
 use chrono::prelude::*;
 
 use std::cmp::Ordering;
-use std::fmt::{self, Debug, Display, Formatter};
+use std::fmt::Debug;
 use std::str::FromStr;
 
 use self::parse::{CronExpr, OrsExpr};
@@ -56,8 +56,6 @@ enum DaysOfWeekKind {
     Pattern,
     /// A '*' expression
     Star,
-    /// A '?' expression
-    Any,
     /// A 'L' expression for the last day. One day is paired with this making it easier to access
     Last,
     /// A '#' expression for an nth day of the month. One day and one nth value is paired making it
@@ -75,7 +73,6 @@ impl TimePattern for DaysOfWeek {
     fn compile(expr: Self::Expr) -> Self {
         match expr {
             parse::DayOfWeekExpr::All => Self(DaysOfWeekKind::Star, 0),
-            parse::DayOfWeekExpr::Any => Self(DaysOfWeekKind::Any, 0),
             parse::DayOfWeekExpr::Last(day) => Self(DaysOfWeekKind::Last, u8::from(day)),
             parse::DayOfWeekExpr::Nth(day, nth) => {
                 Self(DaysOfWeekKind::Nth, (u8::from(nth) << 3) | u8::from(day))
@@ -102,9 +99,8 @@ impl DaysOfWeek {
         self.0
     }
 
-    #[inline]
-    fn any_or_star(&self) -> bool {
-        matches!(self.kind(), DaysOfWeekKind::Any | DaysOfWeekKind::Star)
+    fn is_star(&self) -> bool {
+        matches!(self.kind(), DaysOfWeekKind::Star)
     }
 
     #[inline]
@@ -551,7 +547,6 @@ impl Hours {
 enum DaysOfMonthKind {
     Pattern,
     Star,
-    Any,
     Last,
     Weekday,
     LastWeekday,
@@ -567,7 +562,6 @@ impl TimePattern for DaysOfMonth {
         use parse::{DayOfMonthExpr, Last};
         match expr {
             DayOfMonthExpr::All => Self(DaysOfMonthKind::Star, 0),
-            DayOfMonthExpr::Any => Self(DaysOfMonthKind::Any, 0),
             DayOfMonthExpr::Last(Last::Day) => Self(DaysOfMonthKind::Last, 0),
             DayOfMonthExpr::Last(Last::Weekday) => Self(DaysOfMonthKind::LastWeekday, 0),
             DayOfMonthExpr::Last(Last::Offset(offset)) => {
@@ -610,9 +604,8 @@ impl DaysOfMonth {
         )
     }
 
-    #[inline]
-    fn any_or_star(&self) -> bool {
-        matches!(self.kind(), DaysOfMonthKind::Any | DaysOfMonthKind::Star)
+    fn is_star(&self) -> bool {
+        matches!(self.kind(), DaysOfMonthKind::Star)
     }
 
     /// Returns the one day set in this expression. Used to get last day offsets and the day
@@ -918,64 +911,29 @@ pub struct Cron {
     dow: DaysOfWeek,
 }
 
-/// An error occured while parsing/validating the cron expression.
-#[derive(Debug)]
-pub struct CronError(());
-
-impl Display for CronError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "An error occured while parsing the cron expression")
-    }
-}
-
-impl std::error::Error for CronError {}
-
 impl FromStr for Cron {
-    type Err = CronError;
+    type Err = parse::CronParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        use parse::*;
-
-        // parse
-        let expr: CronExpr = s.parse().map_err(|_| CronError(()))?;
-
-        if !expr.is_valid() {
-            return Err(CronError(()));
-        }
-
-        // compile
+        // parse and compile
         // Any parsed expression can have redundant info, but we can
         // easily compress it into a neat bit map where each of the bits
         // of an integer represent the minutes/hours/days/months/weekdays
         // in a cron expression. It might be compressable further but I
         // doubt we'll need to do that.
-        Ok(Cron {
+        s.parse().map(Cron::new)
+    }
+}
+
+impl Cron {
+    /// Simplifies the cron expression into a cron value.
+    pub fn new(expr: CronExpr) -> Self {
+        Self {
             minutes: TimePattern::compile(expr.minutes),
             hours: TimePattern::compile(expr.hours),
             dom: TimePattern::compile(expr.doms),
             months: TimePattern::compile(expr.months),
             dow: TimePattern::compile(expr.dows),
-        })
-    }
-}
-
-impl Cron {
-    /// Attempts to simplify the cron expression. If the expression is not valid,
-    /// this returns a [`CronError`].
-    ///
-    /// [`CronError`]: struct.CronError.html
-    #[inline]
-    pub fn new(expr: CronExpr) -> Result<Self, CronError> {
-        if expr.is_valid() {
-            Ok(Self {
-                minutes: TimePattern::compile(expr.minutes),
-                hours: TimePattern::compile(expr.hours),
-                dom: TimePattern::compile(expr.doms),
-                months: TimePattern::compile(expr.months),
-                dow: TimePattern::compile(expr.dows),
-            })
-        } else {
-            Err(CronError(()))
         }
     }
 
@@ -997,8 +955,8 @@ impl Cron {
     /// ```
     #[inline]
     pub fn any(&self) -> bool {
-        if self.dow.any_or_star() {
-            if self.dom.any_or_star() {
+        if self.dow.is_star() {
+            if self.dom.is_star() {
                 return true;
             }
 
@@ -1049,15 +1007,11 @@ impl Cron {
             return false;
         }
 
-        if self.dom.any_or_star() && self.dow.any_or_star() {
-            true
-        } else if self.dom.any_or_star() {
-            self.dow.contains(dt)
-        } else if self.dow.any_or_star() {
-            self.dom.contains(dt)
-        } else {
-            // we shouldn't get here, but if we do, just treat it like if they were both star
-            true
+        match (self.dom.is_star(), self.dow.is_star()) {
+            (true, true) => true,
+            (true, false) => self.dow.contains(dt),
+            (false, true) => self.dom.contains(dt),
+            (false, false) => self.dow.contains(dt) || self.dom.contains(dt),
         }
     }
 
@@ -1067,15 +1021,11 @@ impl Cron {
             return false;
         }
 
-        if self.dom.any_or_star() && self.dow.any_or_star() {
-            true
-        } else if self.dom.any_or_star() {
-            self.dow.contains_date(date)
-        } else if self.dow.any_or_star() {
-            self.dom.contains_date(date)
-        } else {
-            // we shouldn't get here, but if we do, just treat it like if they were both star
-            true
+        match (self.dom.is_star(), self.dow.is_star()) {
+            (true, true) => true,
+            (true, false) => self.dow.contains_date(date),
+            (false, true) => self.dom.contains_date(date),
+            (false, false) => self.dow.contains_date(date) || self.dom.contains_date(date),
         }
     }
 
@@ -1267,184 +1217,203 @@ impl Cron {
     /// Gets the next matching (current inclusive) day of the month or day of the week that
     /// matches the cron expression. The returned matching day is a value 0-30.
     fn find_next_day(&self, date: Date<Utc>) -> Option<u32> {
+        match (self.dom.is_star(), self.dow.is_star()) {
+            (true, true) => Some(date.day0()),
+            (true, false) => self.find_next_weekday(date),
+            (false, true) => self.find_next_day_of_month(date),
+            (false, false) => {
+                let next_weekday = self.find_next_weekday(date);
+                let next_day = self.find_next_day_of_month(date);
+                match (next_day, next_weekday) {
+                    (Some(day), Some(weekday)) => Some(std::cmp::min(day, weekday)),
+                    (Some(day), None) => Some(day),
+                    (None, Some(day)) => Some(day),
+                    (None, None) => None,
+                }
+            }
+        }
+    }
+
+    /// Gets the next matching (current inclusive) day of the month that matches the cron expression.
+    /// The returned matching day is a value 0-30.
+    fn find_next_day_of_month(&self, date: Date<Utc>) -> Option<u32> {
         let days_in_month = days_in_month(date);
-        if self.dom.any_or_star() {
-            // calculate based on day of the week
-            match self.dow.kind() {
-                DaysOfWeekKind::Last => {
-                    let cron_weekday = self.dow.last().unwrap().num_days_from_sunday();
-                    let current_weekday = date.weekday().num_days_from_sunday();
-                    // calculate an offset that can be added to the current day to get what would be a day
-                    // of a week where that day is the expected weekday for the cron
-                    let weekday_offset = if cron_weekday < current_weekday {
-                        // example:
-                        // current: Thursday, expected: Tuesday
-                        // 7 - (4 - 2) = 5
-                        // October 0th 2020 (Thursday) + 5 = October 5th 2020 (Tuesday)
-                        7 - (current_weekday - cron_weekday)
-                    } else {
-                        // example:
-                        // expected: Thursday, current: Tuesday
-                        // (4 - 2) = 2
-                        // October 5th 2020 (Tuesday) + 2 = October 7th 2020 (Thursday)
-                        cron_weekday - current_weekday
-                    };
-                    // the remainder of 7 can be used with day0 to determine the first day0 of the
-                    // current day of the week in the month. it doesn't matter if this calculation
-                    // overflows the date out of the month (31st + 5 = 36th) since we're just looking
-                    // for the first day.
-                    let first_week_day = (date.day0() + weekday_offset) % 7;
-                    // using that we can find the last day this weekday occurs in the month
-                    let last_day = match (days_in_month, first_week_day) {
-                        // special 5 week weekday handling
-                        (29, day @ 0)
-                        | (30, day @ 0)
-                        | (30, day @ 1)
-                        | (31, day @ 0)
-                        | (31, day @ 1)
-                        | (31, day @ 2) => day + (7 * 4),
-                        (_, day) => day + (7 * 3),
-                    };
-
-                    if date.day0() <= last_day {
-                        Some(last_day)
-                    } else {
+        match self.dom.kind() {
+            DaysOfMonthKind::Last => match self.dom.one_value() {
+                // 'L'
+                0 => Some(days_in_month - 1),
+                // 'L-3'
+                offset => {
+                    let expected = (days_in_month - 1).checked_sub(offset as u32)?;
+                    if expected < date.day0() {
                         None
+                    } else {
+                        Some(expected)
                     }
                 }
-                DaysOfWeekKind::Nth => {
-                    let (nth, day) = self.dow.nth().unwrap();
-                    let cron_weekday = day.num_days_from_sunday();
-                    let current_weekday = date.weekday().num_days_from_sunday();
-                    let weekday_offset = if cron_weekday < current_weekday {
-                        7 - (current_weekday - cron_weekday)
-                    } else {
-                        cron_weekday - current_weekday
-                    };
-                    let first_week_day = (date.day0() + weekday_offset) % 7;
-                    let nth_day = first_week_day + (7 * (nth - 1) as u32);
-                    if nth_day < days_in_month && nth_day >= date.day0() {
-                        Some(nth_day)
-                    } else {
-                        None
-                    }
-                }
-                DaysOfWeekKind::Pattern => {
-                    let current_weekday = date.weekday().num_days_from_sunday();
-                    let map = self.dow.1 & DaysOfWeek::DAY_BITS;
-                    let bottom_cleared = (map >> current_weekday) << current_weekday;
-                    let trailing_zeroes = bottom_cleared.trailing_zeros();
-                    let next_day = if trailing_zeroes < DaysOfWeek::BITS as u32 {
-                        date.day0() + (trailing_zeroes - current_weekday)
-                    } else {
-                        let next_week = map.trailing_zeros();
-                        let remaining_days = (6 - current_weekday) + 1;
-                        date.day0() + remaining_days + next_week
-                    };
-                    if next_day < days_in_month {
-                        Some(next_day)
-                    } else {
-                        None
-                    }
-                }
-                _ => Some(date.day0()),
-            }
-        } else if self.dow.any_or_star() {
-            match self.dom.kind() {
-                DaysOfMonthKind::Last => match self.dom.one_value() {
-                    // 'L'
-                    0 => Some(days_in_month - 1),
-                    // 'L-3'
-                    offset => {
-                        let expected = (days_in_month - 1).checked_sub(offset as u32)?;
-                        if expected < date.day0() {
-                            None
-                        } else {
-                            Some(expected)
-                        }
-                    }
-                },
-                DaysOfMonthKind::LastWeekday => match self.dom.one_value() {
-                    // 'LW'
-                    0 => {
-                        let days_in_month = days_in_month - 1;
-                        let real_day = match Self::weekday_for_day(days_in_month, date) {
-                            Weekday::Sat => days_in_month - 1,
-                            Weekday::Sun => days_in_month - 2,
-                            _ => days_in_month,
-                        };
-                        if real_day < date.day0() {
-                            None
-                        } else {
-                            Some(real_day)
-                        }
-                    }
-                    // 'L-3W'
-                    offset => {
-                        let days_in_month = days_in_month - 1;
-                        let last_in_month =
-                            days_in_month.checked_sub(offset as u32).map(|new_day| {
-                                match Self::weekday_for_day(new_day, date) {
-                                    Weekday::Sat => {
-                                        if new_day == 0 {
-                                            2
-                                        } else {
-                                            new_day - 1
-                                        }
-                                    }
-                                    Weekday::Sun => new_day + 1,
-                                    _ => new_day,
-                                }
-                            })?;
-                        if last_in_month < date.day0() {
-                            None
-                        } else {
-                            Some(last_in_month)
-                        }
-                    }
-                },
-                DaysOfMonthKind::Weekday => {
+            },
+            DaysOfMonthKind::LastWeekday => match self.dom.one_value() {
+                // 'LW'
+                0 => {
                     let days_in_month = days_in_month - 1;
-                    let expected_day = (self.dom.one_value() - 1) as u32;
-                    let real_day = match Self::weekday_for_day(expected_day, date) {
-                        Weekday::Sat => {
-                            if expected_day == 0 {
-                                2
-                            } else {
-                                expected_day - 1
-                            }
-                        }
-                        Weekday::Sun => {
-                            if expected_day == days_in_month {
-                                days_in_month - 2
-                            } else {
-                                expected_day + 1
-                            }
-                        }
-                        _ => expected_day,
+                    let real_day = match Self::weekday_for_day(days_in_month, date) {
+                        Weekday::Sat => days_in_month - 1,
+                        Weekday::Sun => days_in_month - 2,
+                        _ => days_in_month,
                     };
-
-                    if real_day >= date.day0() && real_day <= days_in_month {
-                        Some(real_day)
-                    } else {
+                    if real_day < date.day0() {
                         None
+                    } else {
+                        Some(real_day)
                     }
                 }
-                _ => {
-                    let current_day = date.day0();
-                    let map = self.dom.1 & DaysOfMonth::DAY_BITS;
-                    let bottom_cleared = (map >> current_day) << current_day;
-                    let trailing_zeroes = bottom_cleared.trailing_zeros();
-                    if trailing_zeroes < days_in_month {
-                        Some(trailing_zeroes)
-                    } else {
+                // 'L-3W'
+                offset => {
+                    let days_in_month = days_in_month - 1;
+                    let last_in_month =
+                        days_in_month.checked_sub(offset as u32).map(|new_day| {
+                            match Self::weekday_for_day(new_day, date) {
+                                Weekday::Sat => {
+                                    if new_day == 0 {
+                                        2
+                                    } else {
+                                        new_day - 1
+                                    }
+                                }
+                                Weekday::Sun => new_day + 1,
+                                _ => new_day,
+                            }
+                        })?;
+                    if last_in_month < date.day0() {
                         None
+                    } else {
+                        Some(last_in_month)
                     }
+                }
+            },
+            DaysOfMonthKind::Weekday => {
+                let days_in_month = days_in_month - 1;
+                let expected_day = (self.dom.one_value() - 1) as u32;
+                let real_day = match Self::weekday_for_day(expected_day, date) {
+                    Weekday::Sat => {
+                        if expected_day == 0 {
+                            2
+                        } else {
+                            expected_day - 1
+                        }
+                    }
+                    Weekday::Sun => {
+                        if expected_day == days_in_month {
+                            days_in_month - 2
+                        } else {
+                            expected_day + 1
+                        }
+                    }
+                    _ => expected_day,
+                };
+
+                if real_day >= date.day0() && real_day <= days_in_month {
+                    Some(real_day)
+                } else {
+                    None
                 }
             }
-        } else {
-            // anything else just matches the given date
-            Some(date.day0())
+            _ => {
+                let current_day = date.day0();
+                let map = self.dom.1 & DaysOfMonth::DAY_BITS;
+                let bottom_cleared = (map >> current_day) << current_day;
+                let trailing_zeroes = bottom_cleared.trailing_zeros();
+                if trailing_zeroes < days_in_month {
+                    Some(trailing_zeroes)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Gets the next matching (current inclusive) day of the week that matches the cron expression.
+    /// The returned matching day is a value 0-30.
+    fn find_next_weekday(&self, date: Date<Utc>) -> Option<u32> {
+        let days_in_month = days_in_month(date);
+        match self.dow.kind() {
+            DaysOfWeekKind::Last => {
+                let cron_weekday = self.dow.last().unwrap().num_days_from_sunday();
+                let current_weekday = date.weekday().num_days_from_sunday();
+                // calculate an offset that can be added to the current day to get what would be a day
+                // of a week where that day is the expected weekday for the cron
+                let weekday_offset = if cron_weekday < current_weekday {
+                    // example:
+                    // current: Thursday, expected: Tuesday
+                    // 7 - (4 - 2) = 5
+                    // October 0th 2020 (Thursday) + 5 = October 5th 2020 (Tuesday)
+                    7 - (current_weekday - cron_weekday)
+                } else {
+                    // example:
+                    // expected: Thursday, current: Tuesday
+                    // (4 - 2) = 2
+                    // October 5th 2020 (Tuesday) + 2 = October 7th 2020 (Thursday)
+                    cron_weekday - current_weekday
+                };
+                // the remainder of 7 can be used with day0 to determine the first day0 of the
+                // current day of the week in the month. it doesn't matter if this calculation
+                // overflows the date out of the month (31st + 5 = 36th) since we're just looking
+                // for the first day.
+                let first_week_day = (date.day0() + weekday_offset) % 7;
+                // using that we can find the last day this weekday occurs in the month
+                let last_day = match (days_in_month, first_week_day) {
+                    // special 5 week weekday handling
+                    (29, day @ 0)
+                    | (30, day @ 0)
+                    | (30, day @ 1)
+                    | (31, day @ 0)
+                    | (31, day @ 1)
+                    | (31, day @ 2) => day + (7 * 4),
+                    (_, day) => day + (7 * 3),
+                };
+
+                if date.day0() <= last_day {
+                    Some(last_day)
+                } else {
+                    None
+                }
+            }
+            DaysOfWeekKind::Nth => {
+                let (nth, day) = self.dow.nth().unwrap();
+                let cron_weekday = day.num_days_from_sunday();
+                let current_weekday = date.weekday().num_days_from_sunday();
+                let weekday_offset = if cron_weekday < current_weekday {
+                    7 - (current_weekday - cron_weekday)
+                } else {
+                    cron_weekday - current_weekday
+                };
+                let first_week_day = (date.day0() + weekday_offset) % 7;
+                let nth_day = first_week_day + (7 * (nth - 1) as u32);
+                if nth_day < days_in_month && nth_day >= date.day0() {
+                    Some(nth_day)
+                } else {
+                    None
+                }
+            }
+            DaysOfWeekKind::Pattern => {
+                let current_weekday = date.weekday().num_days_from_sunday();
+                let map = self.dow.1 & DaysOfWeek::DAY_BITS;
+                let bottom_cleared = (map >> current_weekday) << current_weekday;
+                let trailing_zeroes = bottom_cleared.trailing_zeros();
+                let next_day = if trailing_zeroes < DaysOfWeek::BITS as u32 {
+                    date.day0() + (trailing_zeroes - current_weekday)
+                } else {
+                    let next_week = map.trailing_zeros();
+                    let remaining_days = (6 - current_weekday) + 1;
+                    date.day0() + remaining_days + next_week
+                };
+                if next_day < days_in_month {
+                    Some(next_day)
+                } else {
+                    None
+                }
+            }
+            _ => Some(date.day0()),
         }
     }
 
@@ -1699,21 +1668,8 @@ mod tests {
     }
 
     #[test]
-    fn check_not_valid() {
-        let crons = [
-            // double any is not allowed,
-            // you must specify one or the other with any
-            "* * ? * ?",
-        ];
-
-        for cron in &crons {
-            assert!(matches!(cron.parse::<Cron>(), Err(_)));
-        }
-    }
-
-    #[test]
     fn parse_check_specific_time() {
-        let cron = "5 0 23 8 ?";
+        let cron = "5 0 23 8 *";
 
         check_does_contain(
             cron,
@@ -1735,7 +1691,7 @@ mod tests {
     /// check to make sure we don't accidentally include any off-by-one errors with ranges
     #[test]
     fn parse_check_specific_time_as_ranges() {
-        let cron = "5-5 0-0 23-23 8-8 ?";
+        let cron = "5-5 0-0 23-23 8-8 *";
 
         check_does_contain(
             cron,
@@ -1758,7 +1714,7 @@ mod tests {
     fn parse_check_overflow_time_ranges() {
         // The 31st and 1st of January and December,
         // at 11:00 PM, 11:59 PM, 12:00 AM, and 12:59 AM
-        let cron = "59-0 23-0 31-1 12-1 ?";
+        let cron = "59-0 23-0 31-1 12-1 *";
 
         check_does_contain(
             cron,
@@ -1783,7 +1739,7 @@ mod tests {
         );
 
         // Midnight on every Saturday and Sunday in January
-        let cron = "0 0 ? JAN SAT-SUN";
+        let cron = "0 0 * JAN SAT-SUN";
 
         check_does_contain(
             cron,
@@ -1798,7 +1754,7 @@ mod tests {
 
     #[test]
     fn parse_check_limits() {
-        let cron = "0,59 0,23 1,31 1,12 ?";
+        let cron = "0,59 0,23 1,31 1,12 *";
 
         check_does_contain(
             cron,
@@ -1814,7 +1770,7 @@ mod tests {
 
     #[test]
     fn parse_check_anytime_but_its_ranges() {
-        let cron = "0-59 0-23 1-31 1-12 ?";
+        let cron = "0-59 0-23 1-31 1-12 *";
 
         check_does_contain(
             cron,
@@ -1826,7 +1782,7 @@ mod tests {
             ],
         );
 
-        let cron = "0-59 0-23 ? 1-12 1-7";
+        let cron = "0-59 0-23 * 1-12 1-7";
 
         check_does_contain(
             cron,
@@ -1841,7 +1797,7 @@ mod tests {
 
     #[test]
     fn parse_check_leap_days() {
-        let cron = "0 0 L FEB ?";
+        let cron = "0 0 L FEB *";
 
         check_does_contain(
             cron,
@@ -1860,7 +1816,7 @@ mod tests {
 
     #[test]
     fn parse_check_offset_leap_days() {
-        let cron = "0 0 L-1 FEB ?";
+        let cron = "0 0 L-1 FEB *";
 
         check_does_contain(
             cron,
@@ -1893,7 +1849,7 @@ mod tests {
 
     #[test]
     fn parse_check_offset_weekend_start_months() {
-        let cron = "0 0 L-30W * ?";
+        let cron = "0 0 L-30W * *";
 
         check_does_contain(
             cron,
@@ -1903,7 +1859,7 @@ mod tests {
 
     #[test]
     fn parse_check_offset_weekend_start_months_beyond_days() {
-        let cron = "0 0 L-28W FEB ?";
+        let cron = "0 0 L-28W FEB *";
 
         check_does_not_contain(
             cron,
@@ -1913,7 +1869,7 @@ mod tests {
 
     #[test]
     fn parse_check_last_weekdays() {
-        let cron = "0 0 LW MAY ?";
+        let cron = "0 0 LW MAY *";
 
         check_does_contain(
             cron,
@@ -1927,7 +1883,7 @@ mod tests {
 
     #[test]
     fn parse_check_last_weekdays_offset() {
-        let cron = "0 0 L-1W MAY ?";
+        let cron = "0 0 L-1W MAY *";
 
         check_does_contain(
             cron,
@@ -1941,7 +1897,7 @@ mod tests {
 
     #[test]
     fn parse_check_closest_weekday() {
-        let cron = "0 0 1W MAY ?";
+        let cron = "0 0 1W MAY *";
 
         check_does_contain(
             cron,
@@ -1955,7 +1911,7 @@ mod tests {
 
     #[test]
     fn parse_check_last_weekday() {
-        let cron = "0 0 ? * 7L"; // the last saturday of every month
+        let cron = "0 0 * * 7L"; // the last saturday of every month
 
         check_does_contain(
             cron,
@@ -1982,7 +1938,7 @@ mod tests {
 
     #[test]
     fn parse_check_nth_weekday() {
-        let cron = "0 0 ? * SAT#5"; // the 5th saturday of every month
+        let cron = "0 0 * * SAT#5"; // the 5th saturday of every month
 
         check_does_contain(
             cron,
