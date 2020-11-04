@@ -1,0 +1,19 @@
+[package]
+name = "cfron"
+description = "A Quartz-like cron parser used as part of Cron Triggers in Cloudflare Workers"
+version = "0.1.0"
+authors = ["Aaron Loyd <aloyd@cloudflare.com>"]
+repository = "https://github.com/cloudflare/cfron"
+edition = "2018"
+license-file = "LICENSE"
+
+[[bench]]
+name = "cron"
+harness = false
+
+[dependencies]
+chrono = "0.4"
+nom = "5.1"
+
+[dev-dependencies]
+criterion = "0.3"

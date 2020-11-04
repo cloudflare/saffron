@@ -1,0 +1,24 @@
+[package]
+name = "cfron-worker"
+description = """
+A fallback Worker for validating, describing, and
+getting the next execution time of cron strings.
+"""
+version = "0.1.0"
+authors = ["Aaron Loyd <aloyd@cloudflare.com>"]
+repository = "https://github.com/cloudflare/cfron"
+edition = "2018"
+license-file = "LICENSE"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cfron = { path = "../cfron", version = "0.1" }
+chrono = { version = "0.4", features = ["wasmbind"] }
+console_error_panic_hook = { version = "0.1" }
+js-sys = "0.3"
+wasm-bindgen ={ version = "=0.2.65" }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.2"

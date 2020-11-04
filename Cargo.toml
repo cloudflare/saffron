@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "cfron",
+    "cfron-worker",
+]
+
+[profile.release.package.cfron-worker]
+opt-level = "s"
