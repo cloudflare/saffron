@@ -1,0 +1,22 @@
+{
+  "name": "@cloudflare/cfron",
+  "version": "0.1.0",
+  "description": "A wasm wrapper around the cron parser powering Cron Triggers for Cloudflare Workers",
+  "contributors": [
+    "Aaron Loyd <aloyd@cloudflare.com>"
+  ],
+  "homepage": "https://github.com/cloudflare/cfron#readme",
+  "repository": "github:cloudflare/cfron",
+  "bugs": "https://github.com/cloudflare/cfron/issues",
+  "type": "module",
+  "main": "cfron.js",
+  "module": "cfron.js",
+  "types": "cfron.d.ts",
+  "files": [
+    "cfron_bg.d.ts",
+    "cfron_bg.js",
+    "cfron_bg.wasm",
+    "cfron.d.ts",
+    "cfron.js"
+  ]
+}
