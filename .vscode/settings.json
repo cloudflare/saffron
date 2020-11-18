@@ -1,5 +1,5 @@
 {
-  "rust-analyzer.checkOnSave.command": "clippy",
+  "rust-analyzer.checkOnSave.enable": false,
   "editor.formatOnSave": true,
   "[rust]": {
     "editor.defaultFormatter": "matklad.rust-analyzer"
