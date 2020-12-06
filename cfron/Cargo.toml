@@ -7,13 +7,21 @@ name = "cfron"
 repository = "https://github.com/cloudflare/cfron"
 version = "0.1.0"
 
+[features]
+default = []
+std = []
+
 [[bench]]
 harness = false
 name = "cron"
 
+[[example]]
+name = "future-times"
+required-features = ["chrono/clock"]
+
 [dependencies]
-chrono = "0.4"
-nom = "5.1"
+chrono = {version = "0.4", default-features = false}
+nom = {version = "5.1", default-features = false}
 
 [dev-dependencies]
 criterion = "0.3"

@@ -1,6 +1,16 @@
 //! A module allowing for inspection of a parsed cron expression. This can be used to
 //! accurately describe an expression without reducing it into a cron value.
 
+#[cfg(not(feature = "std"))]
+use alloc::vec::{self, Vec};
+
+use core::cmp::Ordering;
+use core::convert::TryFrom;
+use core::fmt::{self, Display, Formatter};
+use core::iter::{Chain, Once};
+use core::marker::PhantomData;
+use core::slice;
+use core::str::FromStr;
 use nom::{
     branch::alt,
     bytes::complete::tag_no_case,
@@ -9,12 +19,8 @@ use nom::{
     sequence::tuple,
     IResult,
 };
-use std::convert::TryFrom;
-use std::fmt::{self, Display, Formatter};
-use std::iter::{Chain, Once};
-use std::marker::PhantomData;
-use std::slice;
-use std::str::FromStr;
+
+#[cfg(feature = "std")]
 use std::vec;
 
 /// An error returned if an expression type value is out of range.
@@ -26,6 +32,9 @@ impl Display for ValueOutOfRangeError {
         "The expression value is out range of valid values".fmt(f)
     }
 }
+
+#[cfg(feature = "std")]
+impl std::error::Error for ValueOutOfRangeError {}
 
 mod internal {
     pub trait Sealed {}
@@ -252,7 +261,7 @@ impl ExprValue for DayOfWeek {
 }
 impl PartialOrd for DayOfWeek {
     #[inline]
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.0
             .number_from_sunday()
             .partial_cmp(&other.0.number_from_sunday())
@@ -260,7 +269,7 @@ impl PartialOrd for DayOfWeek {
 }
 impl Ord for DayOfWeek {
     #[inline]
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         self.0
             .number_from_sunday()
             .cmp(&other.0.number_from_sunday())
@@ -464,7 +473,7 @@ impl<E> Exprs<E> {
 
     /// Iterates over all expressions in this set
     pub fn iter(&self) -> ExprsIter<E> {
-        std::iter::once(&self.first).chain(self.tail.iter())
+        core::iter::once(&self.first).chain(self.tail.iter())
     }
 }
 
@@ -473,7 +482,7 @@ impl<E> IntoIterator for Exprs<E> {
     type IntoIter = IntoExprsIter<E>;
 
     fn into_iter(self) -> Self::IntoIter {
-        std::iter::once(self.first).chain(self.tail.into_iter())
+        core::iter::once(self.first).chain(self.tail.into_iter())
     }
 }
 
@@ -514,6 +523,7 @@ impl Display for CronParseError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for CronParseError {}
 
 /// A parser that can parse a single value, a range of values, or a step expression
@@ -878,8 +888,11 @@ impl FromStr for CronExpr {
 
 #[cfg(test)]
 mod tests {
-    use std::convert::TryFrom;
-    use std::fmt::Debug;
+    use core::convert::TryFrom;
+    use core::fmt::Debug;
+
+    #[cfg(not(feature = "std"))]
+    use alloc::vec;
 
     use super::*;
 

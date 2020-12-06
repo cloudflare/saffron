@@ -1,12 +1,17 @@
 //! A "Quartz scheduler"-like cron parser powering Cron Triggers on Cloudflare Workers.
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
 pub mod parse;
 
 use chrono::prelude::*;
 
-use std::cmp::Ordering;
-use std::fmt::Debug;
-use std::str::FromStr;
+use core::cmp::{self, Ordering};
+use core::fmt::Debug;
+use core::str::FromStr;
 
 use self::parse::{CronExpr, OrsExpr};
 
@@ -1225,7 +1230,7 @@ impl Cron {
                 let next_weekday = self.find_next_weekday(date);
                 let next_day = self.find_next_day_of_month(date);
                 match (next_day, next_weekday) {
-                    (Some(day), Some(weekday)) => Some(std::cmp::min(day, weekday)),
+                    (Some(day), Some(weekday)) => Some(cmp::min(day, weekday)),
                     (Some(day), None) => Some(day),
                     (None, Some(day)) => Some(day),
                     (None, None) => None,
@@ -1614,7 +1619,7 @@ impl Iterator for CronTimesIter {
     }
 }
 
-impl std::iter::FusedIterator for CronTimesIter {}
+impl core::iter::FusedIterator for CronTimesIter {}
 
 #[cfg(test)]
 mod tests {
