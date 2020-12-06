@@ -1,19 +1,19 @@
 [package]
-name = "cfron-web"
+authors = ["Aaron Loyd <aloyd@cloudflare.com>"]
 description = """
 A web wrapper around the cfron Rust library powering Cron Triggers on Cloudflare Workers.
 """
-version = "0.1.0"
-authors = ["Aaron Loyd <aloyd@cloudflare.com>"]
-repository = "https://github.com/cloudflare/cfron"
 edition = "2018"
 license-file = "LICENSE"
+name = "cfron-web"
+repository = "https://github.com/cloudflare/cfron"
+version = "0.1.0"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-cfron = { path = "../cfron", version = "0.1.0" }
-chrono = { version = "0.4", features = ["wasmbind"] }
+cfron = {path = "../cfron", version = "0.1.0"}
+chrono = {version = "0.4", features = ["wasmbind"]}
 js-sys = "0.3"
 wasm-bindgen = "=0.2.65"
