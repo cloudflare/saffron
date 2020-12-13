@@ -9,11 +9,11 @@ pub mod parse;
 
 use chrono::prelude::*;
 
-use core::cmp::{self, Ordering};
+use core::cmp;
 use core::fmt::Debug;
 use core::str::FromStr;
 
-use self::parse::{CronExpr, OrsExpr};
+use self::parse::{CronExpr, ExprValue, OrsExpr};
 
 /// Returns the number of days in the month, 28-31
 fn days_in_month(date: Date<Utc>) -> u32 {
@@ -178,153 +178,145 @@ impl DaysOfWeek {
 
     #[inline]
     fn add_ors(mut pattern: u8, expr: OrsExpr<parse::DayOfWeek>) -> u8 {
-        match expr {
+        match expr.normalize() {
             OrsExpr::One(one) => pattern |= Self::value_pattern(one),
             OrsExpr::Range(start, end) => {
-                match start.cmp(&end) {
-                    Ordering::Equal => pattern |= Self::value_pattern(start),
-                    Ordering::Less => {
-                        let start = u8::from(start);
-                        let end = u8::from(end);
+                if start <= end {
+                    let start = u8::from(start);
+                    let end = u8::from(end);
 
-                        // example: MON-FRI (or 2-6) (true value: 1-5)
-                        // our bit map goes in reverse, so for weekdays
-                        // our final mask should look like this
-                        //
-                        // ... ALL SAT FRI THU WED TUE MON SUN
-                        // ... 0   0   1   1   1   1   1   0
-                        //
-                        // to start with, our mask looks like this
-                        //
-                        // ... ALL SAT FRI THU WED TUE MON SUN
-                        // ... 0   1   1   1   1   1   1   1
-                        let mut bits = Self::DAY_BITS;
-                        // remove the end bits by shifting the bits to the right
-                        // by the start value (1), then shift it back.
-                        //
-                        // shift right by 1
-                        //                                 truncated
-                        // ... ALL SAT FRI THU WED TUE MON SUN | (OOB)
-                        // ... 0   0   1   1   1   1   1   1   | 1
-                        //
-                        // shift left by 1
-                        //
-                        // ... ALL SAT FRI THU WED TUE MON SUN
-                        // ... 0   1   1   1   1   1   1   0
-                        bits = (bits >> start) << start;
-                        // remove the start bits in the same way, shift the bits
-                        // to the left by the number of bits in the integer (8) minus
-                        // the end value (5) minus 1 (8 - 5 - 1 = 2).
-                        // if we had a value that took up the whole bit map with a range
-                        // that reached the max value, this operation would result in -1.
-                        // In that case, we'd floor to 0 and not shift at all. but because
-                        // it's the max value, we don't actually need to shift to truncate at
-                        // all. so we can just skip this in that case.
-                        //
-                        // shift left by 2
-                        // truncated
-                        // (OOB)   | ALL SAT FRI THU WED TUE MON SUN
-                        // 0   1   | 1   1   1   1   1   0   0   0
-                        //
-                        // shift right by 2
-                        //
-                        // ... ALL SAT FRI THU WED TUE MON SUN
-                        // ... 0   0   1   1   1   1   1   0
-                        if end < Self::UPPER_BIT_BOUND {
-                            // this won't overflow, so we might as well use wrapping arithmetic anyway
-                            let end_shift = Self::BITS.wrapping_sub(end + 1);
-                            bits = (bits << end_shift) >> end_shift;
-                        }
-
-                        debug_assert_pattern!(bits, Self::DAY_BITS);
-
-                        pattern |= bits;
+                    // example: MON-FRI (or 2-6) (true value: 1-5)
+                    // our bit map goes in reverse, so for weekdays
+                    // our final mask should look like this
+                    //
+                    // ... ALL SAT FRI THU WED TUE MON SUN
+                    // ... 0   0   1   1   1   1   1   0
+                    //
+                    // to start with, our mask looks like this
+                    //
+                    // ... ALL SAT FRI THU WED TUE MON SUN
+                    // ... 0   1   1   1   1   1   1   1
+                    let mut bits = Self::DAY_BITS;
+                    // remove the end bits by shifting the bits to the right
+                    // by the start value (1), then shift it back.
+                    //
+                    // shift right by 1
+                    //                                 truncated
+                    // ... ALL SAT FRI THU WED TUE MON SUN | (OOB)
+                    // ... 0   0   1   1   1   1   1   1   | 1
+                    //
+                    // shift left by 1
+                    //
+                    // ... ALL SAT FRI THU WED TUE MON SUN
+                    // ... 0   1   1   1   1   1   1   0
+                    bits = (bits >> start) << start;
+                    // remove the start bits in the same way, shift the bits
+                    // to the left by the number of bits in the integer (8) minus
+                    // the end value (5) minus 1 (8 - 5 - 1 = 2).
+                    // if we had a value that took up the whole bit map with a range
+                    // that reached the max value, this operation would result in -1.
+                    // In that case, we'd floor to 0 and not shift at all. but because
+                    // it's the max value, we don't actually need to shift to truncate at
+                    // all. so we can just skip this in that case.
+                    //
+                    // shift left by 2
+                    // truncated
+                    // (OOB)   | ALL SAT FRI THU WED TUE MON SUN
+                    // 0   1   | 1   1   1   1   1   0   0   0
+                    //
+                    // shift right by 2
+                    //
+                    // ... ALL SAT FRI THU WED TUE MON SUN
+                    // ... 0   0   1   1   1   1   1   0
+                    if end < Self::UPPER_BIT_BOUND {
+                        // this won't overflow, so we might as well use wrapping arithmetic anyway
+                        let end_shift = Self::BITS.wrapping_sub(end + 1);
+                        bits = (bits << end_shift) >> end_shift;
                     }
-                    Ordering::Greater => {
-                        // example : FRI-SUN (6-0)
-                        // to match up with quartz schedulers, we have to support wrapping
-                        // around, so for example with this expression, FRI,SAT,SUN,
-                        // which should look like this:
-                        //
-                        // ... ALL SAT FRI THU WED TUE MON SUN
-                        // ... 0   1   1   0   0   0   0   1
-                        //
-                        // we remove bits from the middle a bit differently
-                        // instead of like we do above. we have to make two
-                        // masks which are missing either the left or right side
-                        // and then OR those together.
-                        //
-                        // same as before, our first mask starts like this
-                        //
-                        // ... ALL SAT FRI THU WED TUE MON SUN
-                        // ... 0   1   1   1   1   1   1   1
-                        let mut top_bits = Self::DAY_BITS;
-                        // to remove the bottom bits, shift the top bits to the right
-                        // by the start value (6) minus one (5), then shift back.
-                        //
-                        // shift right by 5
-                        //                                 truncated
-                        // ... ALL SAT FRI THU WED TUE MON SUN | (OOB)
-                        // ... 0   0   0   0   0   0   1   1   | 1   ...
-                        //
-                        // shift left by 5
-                        //
-                        // ... ALL SAT FRI THU WED TUE MON SUN
-                        // ... 0   1   1   0   0   0   0   0
-                        let start = u8::from(start) - 1;
-                        top_bits = (top_bits >> start) << start;
 
-                        // make a separate mask
-                        //
-                        // ... ALL SAT FRI THU WED TUE MON SUN
-                        // ... 0   1   1   1   1   1   1   1
-                        let mut bottom_bits = Self::DAY_BITS;
-                        // to remove the top bits, shift the top bits to the left
-                        // by the number of bits in the integer (8) minus the end
-                        // value (0) plus one (8 - 0 + 1 = 7)
-                        //
-                        // shift left by 7
-                        // truncated
-                        // ... (OOB)  | Out of mask bounds  ...
-                        // ... 1   1  | 1   0   0   0   0   ...
-                        //
-                        //
-                        // shift right by 7
-                        //
-                        // ... ALL SAT FRI THU WED TUE MON SUN
-                        // ... 0   0   0   0   0   0   0   1
-                        let end = u8::from(end) + 1;
-                        let shift = Self::BITS.wrapping_sub(end);
-                        bottom_bits = (bottom_bits << shift) >> shift;
+                    debug_assert_pattern!(bits, Self::DAY_BITS);
 
-                        let bits = top_bits | bottom_bits;
+                    pattern |= bits;
+                } else {
+                    // example : FRI-SUN (6-0)
+                    // to match up with quartz schedulers, we have to support wrapping
+                    // around, so for example with this expression, FRI,SAT,SUN,
+                    // which should look like this:
+                    //
+                    // ... ALL SAT FRI THU WED TUE MON SUN
+                    // ... 0   1   1   0   0   0   0   1
+                    //
+                    // we remove bits from the middle a bit differently
+                    // instead of like we do above. we have to make two
+                    // masks which are missing either the left or right side
+                    // and then OR those together.
+                    //
+                    // same as before, our first mask starts like this
+                    //
+                    // ... ALL SAT FRI THU WED TUE MON SUN
+                    // ... 0   1   1   1   1   1   1   1
+                    let mut top_bits = Self::DAY_BITS;
+                    // to remove the bottom bits, shift the top bits to the right
+                    // by the start value (6) minus one (5), then shift back.
+                    //
+                    // shift right by 5
+                    //                                 truncated
+                    // ... ALL SAT FRI THU WED TUE MON SUN | (OOB)
+                    // ... 0   0   0   0   0   0   1   1   | 1   ...
+                    //
+                    // shift left by 5
+                    //
+                    // ... ALL SAT FRI THU WED TUE MON SUN
+                    // ... 0   1   1   0   0   0   0   0
+                    let start = u8::from(start) - 1;
+                    top_bits = (top_bits >> start) << start;
 
-                        debug_assert_pattern!(bits, Self::DAY_BITS);
+                    // make a separate mask
+                    //
+                    // ... ALL SAT FRI THU WED TUE MON SUN
+                    // ... 0   1   1   1   1   1   1   1
+                    let mut bottom_bits = Self::DAY_BITS;
+                    // to remove the top bits, shift the top bits to the left
+                    // by the number of bits in the integer (8) minus the end
+                    // value (0) plus one (8 - 0 + 1 = 7)
+                    //
+                    // shift left by 7
+                    // truncated
+                    // ... (OOB)  | Out of mask bounds  ...
+                    // ... 1   1  | 1   0   0   0   0   ...
+                    //
+                    //
+                    // shift right by 7
+                    //
+                    // ... ALL SAT FRI THU WED TUE MON SUN
+                    // ... 0   0   0   0   0   0   0   1
+                    let end = u8::from(end) + 1;
+                    let shift = Self::BITS.wrapping_sub(end);
+                    bottom_bits = (bottom_bits << shift) >> shift;
 
-                        pattern |= bits;
-                    }
+                    let bits = top_bits | bottom_bits;
+
+                    debug_assert_pattern!(bits, Self::DAY_BITS);
+
+                    pattern |= bits;
                 }
             }
             OrsExpr::Step { start, end, step } => {
                 let start = u8::from(start);
-                let end = end.map_or(6, u8::from);
-                match start.cmp(&end) {
-                    Ordering::Equal => pattern |= Self::value_pattern(start),
-                    Ordering::Less => {
-                        let range = (start..=end).step_by(u8::from(step) as usize);
+                let end = u8::from(end);
+                if start <= end {
+                    let range = (start..=end).step_by(u8::from(step) as usize);
 
-                        for shift in range {
-                            pattern |= Self::value_pattern(shift);
-                        }
+                    for shift in range {
+                        pattern |= Self::value_pattern(shift);
                     }
-                    Ordering::Greater => {
-                        let back = start..=6;
-                        let front = 0..=end;
-                        let range = back.chain(front).step_by(u8::from(step) as usize);
+                } else {
+                    let back = start..=parse::DayOfWeek::MAX;
+                    let front = parse::DayOfWeek::MIN..=end;
+                    let range = back.chain(front).step_by(u8::from(step) as usize);
 
-                        for shift in range {
-                            pattern |= Self::value_pattern(shift);
-                        }
+                    for shift in range {
+                        pattern |= Self::value_pattern(shift);
                     }
                 }
             }
@@ -373,63 +365,55 @@ impl Minutes {
 
     #[inline]
     fn add_ors(mut self, expr: OrsExpr<parse::Minute>) -> Self {
-        match expr {
+        match expr.normalize() {
             OrsExpr::One(one) => self.0 |= Self::value_pattern(one),
             OrsExpr::Range(start, end) => {
-                match start.cmp(&end) {
-                    Ordering::Equal => self.0 |= Self::value_pattern(start),
-                    Ordering::Less => {
-                        let start = u8::from(start);
-                        let end = u8::from(end);
+                if start <= end {
+                    let start = u8::from(start);
+                    let end = u8::from(end);
 
-                        // learn how this works in DayOfWeek's add_ors function
-                        let mut bits = Self::ALL;
-                        bits = (bits >> start) << start;
-                        if end < Self::UPPER_BIT_BOUND {
-                            let end_shift = Self::BITS.wrapping_sub(end + 1);
-                            bits = (bits << end_shift) >> end_shift;
-                        }
-                        debug_assert_pattern!(bits, Self::ALL);
-
-                        self.0 |= bits;
+                    // learn how this works in DayOfWeek's add_ors function
+                    let mut bits = Self::ALL;
+                    bits = (bits >> start) << start;
+                    if end < Self::UPPER_BIT_BOUND {
+                        let end_shift = Self::BITS.wrapping_sub(end + 1);
+                        bits = (bits << end_shift) >> end_shift;
                     }
-                    Ordering::Greater => {
-                        let start = u8::from(start) - 1;
-                        let end = u8::from(end) + 1;
+                    debug_assert_pattern!(bits, Self::ALL);
 
-                        let top_bits = (Self::ALL >> start) << start;
+                    self.0 |= bits;
+                } else {
+                    let start = u8::from(start) - 1;
+                    let end = u8::from(end) + 1;
 
-                        let bottom_shift = Self::BITS.wrapping_sub(end);
-                        let bottom_bits = (Self::ALL << bottom_shift) >> bottom_shift;
+                    let top_bits = (Self::ALL >> start) << start;
 
-                        let bits = top_bits | bottom_bits;
+                    let bottom_shift = Self::BITS.wrapping_sub(end);
+                    let bottom_bits = (Self::ALL << bottom_shift) >> bottom_shift;
 
-                        debug_assert_pattern!(bits, Self::ALL);
+                    let bits = top_bits | bottom_bits;
 
-                        self.0 |= bits;
-                    }
+                    debug_assert_pattern!(bits, Self::ALL);
+
+                    self.0 |= bits;
                 }
             }
             OrsExpr::Step { start, end, step } => {
                 let start = u8::from(start);
-                let end = end.map_or(59, u8::from);
-                match start.cmp(&end) {
-                    Ordering::Equal => self.0 |= Self::value_pattern(start),
-                    Ordering::Less => {
-                        let range = (start..=end).step_by(u8::from(step) as usize);
+                let end = u8::from(end);
+                if start <= end {
+                    let range = (start..=end).step_by(u8::from(step) as usize);
 
-                        for shift in range {
-                            self.0 |= Self::value_pattern(shift);
-                        }
+                    for shift in range {
+                        self.0 |= Self::value_pattern(shift);
                     }
-                    Ordering::Greater => {
-                        let back = start..=59;
-                        let front = 0..=end;
-                        let range = back.chain(front).step_by(u8::from(step) as usize);
+                } else {
+                    let back = start..=parse::Minute::MAX;
+                    let front = parse::Minute::MIN..=end;
+                    let range = back.chain(front).step_by(u8::from(step) as usize);
 
-                        for shift in range {
-                            self.0 |= Self::value_pattern(shift);
-                        }
+                    for shift in range {
+                        self.0 |= Self::value_pattern(shift);
                     }
                 }
             }
@@ -483,63 +467,55 @@ impl Hours {
 
     #[inline]
     fn add_ors(mut self, expr: OrsExpr<parse::Hour>) -> Self {
-        match expr {
+        match expr.normalize() {
             OrsExpr::One(one) => self.0 |= Self::value_pattern(one),
             OrsExpr::Range(start, end) => {
-                match start.cmp(&end) {
-                    Ordering::Equal => self.0 |= Self::value_pattern(start),
-                    Ordering::Less => {
-                        let start = u8::from(start);
-                        let end = u8::from(end);
+                if start <= end {
+                    let start = u8::from(start);
+                    let end = u8::from(end);
 
-                        // learn how this works in DayOfWeek's add_ors function
-                        let mut bits = Self::ALL;
-                        bits = (bits >> start) << start;
-                        if end < Self::UPPER_BIT_BOUND {
-                            let end_shift = Self::BITS.wrapping_sub(end + 1);
-                            bits = (bits << end_shift) >> end_shift;
-                        }
-                        debug_assert_pattern!(bits, Self::ALL);
-
-                        self.0 |= bits;
+                    // learn how this works in DayOfWeek's add_ors function
+                    let mut bits = Self::ALL;
+                    bits = (bits >> start) << start;
+                    if end < Self::UPPER_BIT_BOUND {
+                        let end_shift = Self::BITS.wrapping_sub(end + 1);
+                        bits = (bits << end_shift) >> end_shift;
                     }
-                    Ordering::Greater => {
-                        let start = u8::from(start) - 1;
-                        let end = u8::from(end) + 1;
+                    debug_assert_pattern!(bits, Self::ALL);
 
-                        let top_bits = (Self::ALL >> start) << start;
+                    self.0 |= bits;
+                } else {
+                    let start = u8::from(start) - 1;
+                    let end = u8::from(end) + 1;
 
-                        let bottom_shift = Self::BITS.wrapping_sub(end);
-                        let bottom_bits = (Self::ALL << bottom_shift) >> bottom_shift;
+                    let top_bits = (Self::ALL >> start) << start;
 
-                        let bits = top_bits | bottom_bits;
+                    let bottom_shift = Self::BITS.wrapping_sub(end);
+                    let bottom_bits = (Self::ALL << bottom_shift) >> bottom_shift;
 
-                        debug_assert_pattern!(bits, Self::ALL);
+                    let bits = top_bits | bottom_bits;
 
-                        self.0 |= bits;
-                    }
+                    debug_assert_pattern!(bits, Self::ALL);
+
+                    self.0 |= bits;
                 }
             }
             OrsExpr::Step { start, end, step } => {
                 let start = u8::from(start);
-                let end = end.map_or(23, u8::from);
-                match start.cmp(&end) {
-                    Ordering::Equal => self.0 |= Self::value_pattern(start),
-                    Ordering::Less => {
-                        let range = (start..=end).step_by(u8::from(step) as usize);
+                let end = u8::from(end);
+                if start <= end {
+                    let range = (start..=end).step_by(u8::from(step) as usize);
 
-                        for shift in range {
-                            self.0 |= Self::value_pattern(shift);
-                        }
+                    for shift in range {
+                        self.0 |= Self::value_pattern(shift);
                     }
-                    Ordering::Greater => {
-                        let back = start..=23;
-                        let front = 0..=end;
-                        let range = back.chain(front).step_by(u8::from(step) as usize);
+                } else {
+                    let back = start..=parse::Hour::MAX;
+                    let front = parse::Hour::MIN..=end;
+                    let range = back.chain(front).step_by(u8::from(step) as usize);
 
-                        for shift in range {
-                            self.0 |= Self::value_pattern(shift);
-                        }
+                    for shift in range {
+                        self.0 |= Self::value_pattern(shift);
                     }
                 }
             }
@@ -707,63 +683,55 @@ impl DaysOfMonth {
 
     #[inline]
     fn add_ors(mut pattern: u32, expr: OrsExpr<parse::DayOfMonth>) -> u32 {
-        match expr {
+        match expr.normalize() {
             OrsExpr::One(day) => pattern |= Self::value_pattern(day),
             OrsExpr::Range(start, end) => {
-                match start.cmp(&end) {
-                    Ordering::Equal => pattern |= Self::value_pattern(start),
-                    Ordering::Less => {
-                        let start = u8::from(start);
-                        let end = u8::from(end);
+                if start <= end {
+                    let start = u8::from(start);
+                    let end = u8::from(end);
 
-                        // learn how this works in DayOfWeek's add_ors function
-                        let mut bits = Self::DAY_BITS;
-                        bits = (bits >> start) << start;
-                        if end < Self::UPPER_BIT_BOUND {
-                            let end_shift = Self::BITS.wrapping_sub(end + 1);
-                            bits = (bits << end_shift) >> end_shift;
-                        }
-                        debug_assert_pattern!(bits, Self::DAY_BITS);
-
-                        pattern |= bits;
+                    // learn how this works in DayOfWeek's add_ors function
+                    let mut bits = Self::DAY_BITS;
+                    bits = (bits >> start) << start;
+                    if end < Self::UPPER_BIT_BOUND {
+                        let end_shift = Self::BITS.wrapping_sub(end + 1);
+                        bits = (bits << end_shift) >> end_shift;
                     }
-                    Ordering::Greater => {
-                        let start = u8::from(start) - 1;
-                        let end = u8::from(end) + 1;
+                    debug_assert_pattern!(bits, Self::DAY_BITS);
 
-                        let top_bits = (Self::DAY_BITS >> start) << start;
+                    pattern |= bits;
+                } else {
+                    let start = u8::from(start) - 1;
+                    let end = u8::from(end) + 1;
 
-                        let bottom_shift = Self::BITS.wrapping_sub(end);
-                        let bottom_bits = (Self::DAY_BITS << bottom_shift) >> bottom_shift;
+                    let top_bits = (Self::DAY_BITS >> start) << start;
 
-                        let bits = top_bits | bottom_bits;
+                    let bottom_shift = Self::BITS.wrapping_sub(end);
+                    let bottom_bits = (Self::DAY_BITS << bottom_shift) >> bottom_shift;
 
-                        debug_assert_pattern!(bits, Self::DAY_BITS);
+                    let bits = top_bits | bottom_bits;
 
-                        pattern |= bits;
-                    }
+                    debug_assert_pattern!(bits, Self::DAY_BITS);
+
+                    pattern |= bits;
                 }
             }
             OrsExpr::Step { start, end, step } => {
                 let start = u8::from(start);
-                let end = end.map_or(30, u8::from);
-                match start.cmp(&end) {
-                    Ordering::Equal => pattern |= Self::value_pattern(start),
-                    Ordering::Less => {
-                        let range = (start..=end).step_by(u8::from(step) as usize);
+                let end = u8::from(end);
+                if start <= end {
+                    let range = (start..=end).step_by(u8::from(step) as usize);
 
-                        for shift in range {
-                            pattern |= Self::value_pattern(shift);
-                        }
+                    for shift in range {
+                        pattern |= Self::value_pattern(shift);
                     }
-                    Ordering::Greater => {
-                        let back = start..=30;
-                        let front = 0..=end;
-                        let range = back.chain(front).step_by(u8::from(step) as usize);
+                } else {
+                    let back = start..=parse::DayOfMonth::MAX;
+                    let front = parse::DayOfMonth::MIN..=end;
+                    let range = back.chain(front).step_by(u8::from(step) as usize);
 
-                        for shift in range {
-                            pattern |= Self::value_pattern(shift);
-                        }
+                    for shift in range {
+                        pattern |= Self::value_pattern(shift);
                     }
                 }
             }
@@ -817,63 +785,55 @@ impl Months {
 
     #[inline]
     fn add_ors(mut self, expr: OrsExpr<parse::Month>) -> Self {
-        match expr {
+        match expr.normalize() {
             OrsExpr::One(one) => self.0 |= Self::value_pattern(one),
             OrsExpr::Range(start, end) => {
-                match start.cmp(&end) {
-                    Ordering::Equal => self.0 |= Self::value_pattern(start),
-                    Ordering::Less => {
-                        let start = u8::from(start);
-                        let end = u8::from(end);
+                if start <= end {
+                    let start = u8::from(start);
+                    let end = u8::from(end);
 
-                        // learn how this works in DayOfWeek's add_ors function
-                        let mut bits = Self::ALL;
-                        bits = (bits >> start) << start;
-                        if end < Self::UPPER_BIT_BOUND {
-                            let end_shift = Self::BITS.wrapping_sub(end + 1);
-                            bits = (bits << end_shift) >> end_shift;
-                        }
-                        debug_assert_pattern!(bits, Self::ALL);
-
-                        self.0 |= bits;
+                    // learn how this works in DayOfWeek's add_ors function
+                    let mut bits = Self::ALL;
+                    bits = (bits >> start) << start;
+                    if end < Self::UPPER_BIT_BOUND {
+                        let end_shift = Self::BITS.wrapping_sub(end + 1);
+                        bits = (bits << end_shift) >> end_shift;
                     }
-                    Ordering::Greater => {
-                        let start = u8::from(start) - 1;
-                        let end = u8::from(end) + 1;
+                    debug_assert_pattern!(bits, Self::ALL);
 
-                        let top_bits = (Self::ALL >> start) << start;
+                    self.0 |= bits;
+                } else {
+                    let start = u8::from(start) - 1;
+                    let end = u8::from(end) + 1;
 
-                        let bottom_shift = Self::BITS.wrapping_sub(end);
-                        let bottom_bits = (Self::ALL << bottom_shift) >> bottom_shift;
+                    let top_bits = (Self::ALL >> start) << start;
 
-                        let bits = top_bits | bottom_bits;
+                    let bottom_shift = Self::BITS.wrapping_sub(end);
+                    let bottom_bits = (Self::ALL << bottom_shift) >> bottom_shift;
 
-                        debug_assert_pattern!(bits, Self::ALL);
+                    let bits = top_bits | bottom_bits;
 
-                        self.0 |= bits;
-                    }
+                    debug_assert_pattern!(bits, Self::ALL);
+
+                    self.0 |= bits;
                 }
             }
             OrsExpr::Step { start, end, step } => {
                 let start = u8::from(start);
-                let end = end.map_or(11, u8::from);
-                match start.cmp(&end) {
-                    Ordering::Equal => self.0 |= Self::value_pattern(start),
-                    Ordering::Less => {
-                        let range = (start..=end).step_by(u8::from(step) as usize);
+                let end = u8::from(end);
+                if start <= end {
+                    let range = (start..=end).step_by(u8::from(step) as usize);
 
-                        for shift in range {
-                            self.0 |= Self::value_pattern(shift);
-                        }
+                    for shift in range {
+                        self.0 |= Self::value_pattern(shift);
                     }
-                    Ordering::Greater => {
-                        let back = start..=11;
-                        let front = 0..=end;
-                        let range = back.chain(front).step_by(u8::from(step) as usize);
+                } else {
+                    let back = start..=parse::Month::MAX;
+                    let front = parse::Month::MIN..=end;
+                    let range = back.chain(front).step_by(u8::from(step) as usize);
 
-                        for shift in range {
-                            self.0 |= Self::value_pattern(shift);
-                        }
+                    for shift in range {
+                        self.0 |= Self::value_pattern(shift);
                     }
                 }
             }
