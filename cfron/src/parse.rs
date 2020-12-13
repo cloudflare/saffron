@@ -47,6 +47,11 @@ pub trait ExprValue: Sized + Sealed {
     const MAX: u8;
     /// The min value for an expression value
     const MIN: u8;
+
+    /// The max value as this expression value type
+    fn max() -> Self;
+    /// The min value as this expression value type
+    fn min() -> Self;
 }
 
 /// A minute value, 0-59
@@ -56,6 +61,13 @@ impl Sealed for Minute {}
 impl ExprValue for Minute {
     const MAX: u8 = 59;
     const MIN: u8 = 0;
+
+    fn max() -> Self {
+        Self(Self::MAX)
+    }
+    fn min() -> Self {
+        Self(Self::MIN)
+    }
 }
 impl From<Minute> for u8 {
     /// Returns the value, 0-59
@@ -90,6 +102,13 @@ impl Sealed for Hour {}
 impl ExprValue for Hour {
     const MAX: u8 = 23;
     const MIN: u8 = 0;
+
+    fn max() -> Self {
+        Self(Self::MAX)
+    }
+    fn min() -> Self {
+        Self(Self::MIN)
+    }
 }
 impl From<Hour> for u8 {
     #[inline]
@@ -124,6 +143,13 @@ impl Sealed for DayOfMonth {}
 impl ExprValue for DayOfMonth {
     const MAX: u8 = 31;
     const MIN: u8 = 1;
+
+    fn max() -> Self {
+        Self(Self::MAX)
+    }
+    fn min() -> Self {
+        Self(Self::MIN)
+    }
 }
 impl From<DayOfMonth> for u8 {
     #[inline]
@@ -157,6 +183,13 @@ impl Sealed for DayOfMonthOffset {}
 impl ExprValue for DayOfMonthOffset {
     const MAX: u8 = 30;
     const MIN: u8 = 1;
+
+    fn max() -> Self {
+        Self(Self::MAX)
+    }
+    fn min() -> Self {
+        Self(Self::MIN)
+    }
 }
 impl From<DayOfMonthOffset> for u8 {
     #[inline]
@@ -191,6 +224,13 @@ impl Sealed for Month {}
 impl ExprValue for Month {
     const MAX: u8 = 12;
     const MIN: u8 = 1;
+
+    fn max() -> Self {
+        Self(Self::MAX)
+    }
+    fn min() -> Self {
+        Self(Self::MIN)
+    }
 }
 impl From<Month> for u8 {
     #[inline]
@@ -225,6 +265,13 @@ impl Sealed for NthDay {}
 impl ExprValue for NthDay {
     const MAX: u8 = 5;
     const MIN: u8 = 1;
+
+    fn max() -> Self {
+        Self(Self::MAX)
+    }
+    fn min() -> Self {
+        Self(Self::MIN)
+    }
 }
 impl From<NthDay> for u8 {
     #[inline]
@@ -258,6 +305,13 @@ impl Sealed for DayOfWeek {}
 impl ExprValue for DayOfWeek {
     const MAX: u8 = 7;
     const MIN: u8 = 1;
+
+    fn max() -> Self {
+        Self(chrono::Weekday::Sat)
+    }
+    fn min() -> Self {
+        Self(chrono::Weekday::Sun)
+    }
 }
 impl PartialOrd for DayOfWeek {
     #[inline]
@@ -342,6 +396,19 @@ impl<E: ExprValue> ExprValue for Step<E> {
     // problem of whoever reads this. Hopefully the const-eval story of Rust is better
     // when you're fixing this
     const MIN: u8 = E::MIN | 1;
+
+    fn max() -> Self {
+        Self {
+            e: PhantomData,
+            value: Self::MAX,
+        }
+    }
+    fn min() -> Self {
+        Self {
+            e: PhantomData,
+            value: Self::MIN,
+        }
+    }
 }
 impl<E> From<Step<E>> for u8 {
     #[inline]
@@ -422,7 +489,7 @@ pub enum Expr<E> {
 }
 
 /// Either one value, a range, or a step expression
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OrsExpr<E> {
     /// One value
@@ -431,13 +498,33 @@ pub enum OrsExpr<E> {
     Range(E, E),
     /// A '/' character.
     Step {
-        /// The start value.
+        /// The start value. If the start value is '*', this is the min value of E.
         start: E,
-        /// The end value. None if this isn't stepping over a range.
-        end: Option<E>,
+        /// The end value. If the step expression does not specify a value, this is the max value of E.
+        end: E,
         /// The step value.
         step: Step<E>,
     },
+}
+
+impl<E: Copy + ExprValue + PartialEq> OrsExpr<E> {
+    /// Normalizes the expression, simplifying it.
+    ///
+    /// Normalizations:
+    ///  * A range of equal start and end points (i.e. 1-1) is simplified into one value (1)
+    ///  * A step of equal the start and end points (i.e. 1-1/3) is simplified into one value (1)
+    ///  * A step where the start is equal to the max value of E (i.e. 59/3) is simplified into one value (59)
+    ///  * A step where the step value is one (i.e. 5/1 or 5-30/1) is simplified into a range (5-59 or 5-30)
+    pub fn normalize(self) -> OrsExpr<E> {
+        match self {
+            OrsExpr::Range(a, b)
+            | OrsExpr::Step {
+                start: a, end: b, ..
+            } if a == b => OrsExpr::One(a),
+            OrsExpr::Step { step, start, end } if u8::from(step) == 1 => OrsExpr::Range(start, end),
+            x => x,
+        }
+    }
 }
 
 /// A set of expressions with at least one item.
@@ -533,16 +620,11 @@ where
     F: Fn(&str) -> IResult<&str, E>,
 {
     move |input: &str| {
-        let (input, value) = alt((
-            &f,
-            map(char('*'), |_| {
-                E::try_from(E::MIN).expect("ExprValue::MIN should be valid")
-            }),
-        ))(input)?;
+        let (input, value) = alt((&f, map(char('*'), |_| ExprValue::min())))(input)?;
         match opt(alt((char('/'), char('-'))))(input)? {
             (input, Some('/')) => map(step_digit::<E>(), |step| OrsExpr::Step {
                 start: value,
-                end: None,
+                end: ExprValue::max(),
                 step,
             })(input),
             (input, Some('-')) => {
@@ -550,7 +632,7 @@ where
                 match opt(char('/'))(input)? {
                     (input, Some(_)) => map(step_digit::<E>(), |step| OrsExpr::Step {
                         start: value,
-                        end: Some(end),
+                        end,
                         step,
                     })(input),
                     (input, None) => Ok((input, OrsExpr::Range(value, end))),
@@ -611,8 +693,8 @@ where
             let step = step_digit::<E>()(input)?;
             input = step.0;
             expressions = Exprs::new(OrsExpr::Step {
-                start: E::try_from(E::MIN).expect("ExprValue::MIN should be valid"),
-                end: None,
+                start: ExprValue::min(),
+                end: ExprValue::max(),
                 step: step.1,
             })
         } else {
@@ -691,7 +773,7 @@ fn dom_expr(input: &str) -> IResult<&str, DayOfMonthExpr> {
             if let Some((_, step)) = maybe_step {
                 let exprs = Exprs::new(OrsExpr::Step {
                     start: DayOfMonth(1),
-                    end: None,
+                    end: ExprValue::max(),
                     step,
                 });
 
@@ -735,7 +817,7 @@ fn dom_expr(input: &str) -> IResult<&str, DayOfMonthExpr> {
                             input,
                             Exprs::new(OrsExpr::Step {
                                 start: day,
-                                end: Some(end),
+                                end,
                                 step,
                             }),
                         )
@@ -748,7 +830,7 @@ fn dom_expr(input: &str) -> IResult<&str, DayOfMonthExpr> {
                     let (input, step) = step_digit::<DayOfMonth>()(input)?;
                     let exprs = Exprs::new(OrsExpr::Step {
                         start: day,
-                        end: None,
+                        end: ExprValue::max(),
                         step,
                     });
 
@@ -791,7 +873,7 @@ fn dow_expr(input: &str) -> IResult<&str, DayOfWeekExpr> {
             if let Some((_, step)) = maybe_step {
                 let exprs = Exprs::new(OrsExpr::Step {
                     start: DayOfWeek(chrono::Weekday::Sun),
-                    end: None,
+                    end: ExprValue::max(),
                     step,
                 });
 
@@ -826,7 +908,7 @@ fn dow_expr(input: &str) -> IResult<&str, DayOfWeekExpr> {
                             input,
                             Exprs::new(OrsExpr::Step {
                                 start: day,
-                                end: Some(end),
+                                end,
                                 step,
                             }),
                         )
@@ -839,7 +921,7 @@ fn dow_expr(input: &str) -> IResult<&str, DayOfWeekExpr> {
                     let (input, step) = step_digit::<DayOfWeek>()(input)?;
                     let exprs = Exprs::new(OrsExpr::Step {
                         start: day,
-                        end: None,
+                        end: ExprValue::max(),
                         step,
                     });
 
@@ -941,7 +1023,7 @@ mod tests {
         let step = e(step);
         OrsExpr::Step {
             start,
-            end: None,
+            end: E::max(),
             step,
         }
     }
@@ -954,11 +1036,7 @@ mod tests {
         let start = e(start);
         let end = e(end);
         let step = e(step);
-        OrsExpr::Step {
-            start,
-            end: Some(end),
-            step,
-        }
+        OrsExpr::Step { start, end, step }
     }
 
     mod minutes {
