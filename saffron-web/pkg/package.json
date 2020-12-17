@@ -1,0 +1,22 @@
+{
+  "name": "@cloudflare/saffron",
+  "version": "0.1.0",
+  "description": "A wasm wrapper around the cron parser powering Cron Triggers for Cloudflare Workers",
+  "contributors": [
+    "Aaron Loyd <aloyd@cloudflare.com>"
+  ],
+  "homepage": "https://github.com/cloudflare/saffron#readme",
+  "repository": "github:cloudflare/saffron",
+  "bugs": "https://github.com/cloudflare/saffron/issues",
+  "type": "module",
+  "main": "saffron.js",
+  "module": "saffron.js",
+  "types": "saffron.d.ts",
+  "files": [
+    "saffron_bg.d.ts",
+    "saffron_bg.js",
+    "saffron_bg.wasm",
+    "saffron.d.ts",
+    "saffron.js"
+  ]
+}

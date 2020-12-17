@@ -1,4 +1,4 @@
-cfron is a cron parser used as part of the backend for Cron Triggers in Cloudflare Workers. It
+saffron is a cron parser used as part of the backend for Cron Triggers in Cloudflare Workers. It
 provides APIs for the complete stack, allowing us to use the same parser everywhere. It's made in
 two parts:
 
@@ -12,8 +12,8 @@ two parts:
 
 The project itself is divided into 4 Rust workspace members:
 
-1. cfron - the parser itself
-2. cfron-c - the C API used internally by the Workers API
-3. cfron-web - the web API used on the dash in the browser
-4. cfron-worker - the Rust Worker which provides the validate/describe endpoint in the dash API on
+1. saffron - the parser itself
+2. saffron-c - the C API used internally by the Workers API
+3. saffron-web - the web API used on the dash in the browser
+4. saffron-worker - the Rust Worker which provides the validate/describe endpoint in the dash API on
    the edge as a fallback if WASM can't be used in the browser
