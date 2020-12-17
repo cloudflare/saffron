@@ -1,0 +1,19 @@
+[package]
+authors = ["Aaron Loyd <aloyd@cloudflare.com>"]
+description = """
+A web wrapper around the saffron Rust library powering Cron Triggers on Cloudflare Workers.
+"""
+edition = "2018"
+license-file = "LICENSE"
+name = "saffron-web"
+repository = "https://github.com/cloudflare/saffron"
+version = "0.1.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+saffron = {path = "../saffron", version = "0.1.0"}
+chrono = {version = "0.4", features = ["wasmbind"]}
+js-sys = "0.3"
+wasm-bindgen = "=0.2.65"

@@ -1,12 +1,12 @@
 [workspace]
 members = [
-    "cfron",
-    "cfron-web",
-    "cfron-worker",
+    "saffron",
+    "saffron-web",
+    "saffron-worker",
 ]
 
-[profile.release.package.cfron-worker]
+[profile.release.package.saffron-worker]
 opt-level = "s"
 
-[profile.release.package.cfron-web]
+[profile.release.package.saffron-web]
 opt-level = "s"

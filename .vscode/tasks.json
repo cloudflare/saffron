@@ -2,11 +2,11 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Watch cfron",
+            "label": "Watch saffron",
             "group": "build",
             "type": "shell",
             "options": {
-                "cwd": "./cfron"
+                "cwd": "./saffron"
             },
             "runOptions": {
                 "runOn": "folderOpen"
@@ -16,11 +16,11 @@
             "isBackground": true
         },
         {
-            "label": "Watch cfron-web",
+            "label": "Watch saffron-web",
             "group": "build",
             "type": "shell",
             "options": {
-                "cwd": "./cfron-web"
+                "cwd": "./saffron-web"
             },
             "runOptions": {
                 "runOn": "folderOpen"
@@ -30,11 +30,11 @@
             "isBackground": true
         },
         {
-            "label": "Watch cfron-worker",
+            "label": "Watch saffron-worker",
             "group": "build",
             "type": "shell",
             "options": {
-                "cwd": "./cfron-worker"
+                "cwd": "./saffron-worker"
             },
             "runOptions": {
                 "runOn": "folderOpen"
