@@ -16,6 +16,20 @@
             "isBackground": true
         },
         {
+            "label": "Watch saffron-c",
+            "group": "build",
+            "type": "shell",
+            "options": {
+                "cwd": "./saffron-c"
+            },
+            "runOptions": {
+                "runOn": "folderOpen"
+            },
+            "command": "cargo watch -x clippy",
+            "problemMatcher": "$rustc-watch",
+            "isBackground": true
+        },
+        {
             "label": "Watch saffron-web",
             "group": "build",
             "type": "shell",

@@ -1,0 +1,20 @@
+[package]
+authors = ["Aaron Loyd <aloyd@cloudflare.com>"]
+edition = "2018"
+license-file = "LICENSE"
+name = "saffron-c"
+repository = "https://github.com/cloudflare/saffron"
+version = "0.1.0"
+
+[lib]
+name = "saffron"
+crate-type = ["staticlib"]
+
+[dependencies]
+saffron = {path = "../saffron", version = "0.1"}
+chrono = "0.4"
+libc = "0.2"
+
+[profile.release]
+lto = "fat"
+panic = "abort"

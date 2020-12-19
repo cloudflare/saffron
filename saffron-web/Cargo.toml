@@ -17,3 +17,7 @@ saffron = {path = "../saffron", version = "0.1.0"}
 chrono = {version = "0.4", features = ["wasmbind"]}
 js-sys = "0.3"
 wasm-bindgen = "=0.2.65"
+
+[profile.release]
+lto = "fat"
+opt-level = "s"

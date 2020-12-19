@@ -22,3 +22,7 @@ wasm-bindgen = {version = "=0.2.65"}
 
 [dev-dependencies]
 wasm-bindgen-test = "0.2"
+
+[profile.release]
+lto = "fat"
+opt-level = "s"
