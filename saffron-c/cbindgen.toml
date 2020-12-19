@@ -1,0 +1,6 @@
+language = "C"
+include_guard = "SAFFRON_H"
+no_includes = true
+sys_includes = ["stdbool.h", "stdint.h", "stdlib.h"]
+pragma_once = true
+cpp_compat = true
