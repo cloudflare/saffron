@@ -3,19 +3,8 @@ use js_sys::Date as JsDate;
 use wasm_bindgen::prelude::*;
 
 fn chrono_to_js_date(date: DateTime<Utc>) -> JsDate {
-    let js_date = JsDate::new(&JsValue::NULL);
-
-    js_date.set_utc_full_year_with_month_date(
-        date.year() as u32,
-        date.month0() as i32,
-        date.day() as i32,
-    );
-
-    js_date.set_utc_hours(date.hour());
-    js_date.set_utc_minutes(date.minute());
-    js_date.set_utc_seconds(date.second());
-
-    js_date
+    let js_millis = JsValue::from_f64(date.timestamp_millis() as f64);
+    JsDate::new(&js_millis)
 }
 
 /// @private
