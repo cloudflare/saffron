@@ -20,7 +20,7 @@ name = "future-times"
 required-features = ["chrono/clock"]
 
 [dependencies]
-chrono = {version = "0.4", default-features = false}
+chrono = {version = "0.4", default-features = false, features = ["alloc"]}
 nom = {version = "5.1", default-features = false}
 
 [dev-dependencies]
