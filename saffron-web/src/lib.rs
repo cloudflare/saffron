@@ -1,5 +1,7 @@
 use chrono::prelude::*;
-use js_sys::Date as JsDate;
+use js_sys::{Array as JsArray, Date as JsDate, JsString};
+use saffron::parse::{CronExpr, English};
+use saffron::{Cron, CronTimesIter};
 use wasm_bindgen::prelude::*;
 
 fn chrono_to_js_date(date: DateTime<Utc>) -> JsDate {
@@ -11,17 +13,33 @@ fn chrono_to_js_date(date: DateTime<Utc>) -> JsDate {
 #[wasm_bindgen]
 #[derive(Clone, Debug)]
 pub struct WasmCron {
-    inner: saffron::Cron,
+    inner: Cron,
 }
 
 #[wasm_bindgen]
 impl WasmCron {
     #[wasm_bindgen(constructor)]
     pub fn new(s: &str) -> Result<WasmCron, JsValue> {
-        match s.parse() {
-            Ok(inner) => Ok(Self { inner }),
-            Err(err) => Err(JsValue::from_str(&err.to_string())),
-        }
+        s.parse()
+            .map(|inner| Self { inner })
+            .map_err(|e| JsString::from(e.to_string()).into())
+    }
+
+    #[wasm_bindgen(js_name = parseAndDescribe)]
+    pub fn parse_and_describe(s: &str) -> Result<JsArray, JsValue> {
+        s.parse()
+            .map(move |expr: CronExpr| {
+                let description = expr.describe(English::default()).to_string();
+                let cron = Self {
+                    inner: Cron::new(expr),
+                };
+
+                let array = JsArray::new_with_length(2);
+                array.set(0, cron.into());
+                array.set(1, JsString::from(description).into());
+                array
+            })
+            .map_err(|e| JsString::from(e.to_string()).into())
     }
 
     pub fn any(&self) -> bool {
@@ -51,7 +69,7 @@ impl WasmCron {
 /// @private
 #[wasm_bindgen]
 pub struct WasmCronTimesIter {
-    inner: saffron::CronTimesIter,
+    inner: CronTimesIter,
 }
 
 #[wasm_bindgen]

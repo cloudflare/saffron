@@ -34,6 +34,14 @@ export default class Cron {
      */
     constructor(s: string);
     /**
+     * Parses a cron expression into a cron value and string description.
+     * 
+     * @param {string} s The string value to parse
+     * @returns {[Cron, string]} A cron value and a string description
+     * @throws If the string is not a valid cron expression
+     */
+    static parseAndDescribe(s: string): [Cron, string];
+    /**
      * Frees the underlying wasm memory associated with this object.
      */
     free(): void;

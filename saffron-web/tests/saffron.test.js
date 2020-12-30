@@ -11,6 +11,15 @@ it("parses * * * * *", () => {
   cron.free();
 })
 
+it("parses and describes * * * * *", () => {
+  let [cron, description] = Cron.parseAndDescribe("* * * * *");
+  try {
+    expect(description).toBe("Every minute");
+  } finally {
+    cron.free();
+  }
+})
+
 it("throws on invalid cron", () => {
   expect(() => new Cron("invalid")).toThrow();
 })
