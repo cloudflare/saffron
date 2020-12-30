@@ -3,34 +3,25 @@
 use chrono::Utc;
 use saffron::Cron;
 
-const DBG_DEFAULT: &str = "0 0 * * FRI";
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.is_empty() {
-        println!("Usage: cargo run --example future-times -- \"[cron expression]\"");
-        return;
-    }
-
-    let cron_str = args.get(1).map(|s| s.as_str()).unwrap_or(DBG_DEFAULT);
-    let parsed = cron_str.parse::<Cron>();
-    match parsed {
-        Ok(cron) => {
+    match args.get(1).map(|s| s.as_str().parse::<Cron>()).transpose() {
+        Ok(Some(cron)) => {
             if !cron.any() {
-                println!("Cron '{}' will never match any given time!", cron_str);
+                println!("Cron will never match any given time!");
                 return;
             }
 
             let futures = cron.clone().iter_from(Utc::now());
             for time in futures {
-                let result = cron.contains(time);
-                if !result {
-                    println!("Failed check! {} does not contain {}.", cron_str, time);
+                if !cron.contains(time) {
+                    println!("Failed check! Cron does not contain {}.", time);
                     break;
                 }
                 println!("{}", time);
             }
         }
+        Ok(None) => println!("Usage: cargo run --example future-times -- \"[cron expression]\""),
         Err(err) => println!("{}", err),
     }
 }
