@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use js_sys::{Array as JsArray, Date as JsDate, JsString};
-use saffron::{parse::CronExpr, Cron};
+use saffron::parse::{CronExpr, English};
+use saffron::Cron;
 use wasm_bindgen::prelude::*;
 
 use std::collections::HashMap;
@@ -69,12 +70,13 @@ pub fn describe(cron: &str) -> DescriptionResult {
 
     match cron.parse::<CronExpr>() {
         Ok(expr) => {
+            let description = expr.describe(English::default()).to_string();
             let compiled = Cron::new(expr);
             let est_future_executions = compiled.iter_from(Utc::now()).take(5).collect();
 
             DescriptionResult {
                 description: Some(Description {
-                    text: "not implemented".to_owned(),
+                    text: description,
                     est_future_executions,
                 }),
                 ..DescriptionResult::default()

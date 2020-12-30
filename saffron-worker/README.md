@@ -30,7 +30,8 @@ curl http://localhost:8787/describe -X POST -H "Content-Type: application/json" 
       "2020-11-02T00:00:00.000Z",
       "2020-11-09T00:00:00.000Z",
       "2020-11-16T00:00:00.000Z"
-    ]
+    ],
+    "description": "At 12:00 AM on Monday"
   },
   "success": true,
   "errors": null,

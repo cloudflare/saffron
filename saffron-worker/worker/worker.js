@@ -100,7 +100,8 @@ async function handleRequest(request) {
       let result = describe(cron);
       let success = result.errors == null;
       return apiResponse(success ? {
-        est_future_times: result.description.est_future_executions
+        est_future_times: result.description.est_future_executions,
+        description: result.description.text,
       } : {}, success, result.errors || null);
     }
     case "/next": {
