@@ -60,6 +60,22 @@ export default class Cron {
   }
 
   /**
+   * Parses a cron expression into a cron value and string description.
+   * 
+   * @param {string} s The string value to parse
+   * @returns {[Cron, string]} A cron value and a string description
+   * @throws If the string is not a valid cron expression
+   */
+  static parseAndDescribe(s) {
+    let [cron, description] = WasmCron.parseAndDescribe(s);
+
+    const obj = Object.create(Cron.prototype);
+    obj.value = cron;
+
+    return [obj, description];
+  }
+
+  /**
    * Frees the underlying wasm memory associated with this object.
    */
   free() {
