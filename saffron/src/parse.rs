@@ -555,7 +555,7 @@ impl<E: Copy + ExprValue + PartialEq> OrsExpr<E> {
     ///
     /// Normalizations:
     ///  * A range of equal start and end points (i.e. 1-1) is simplified into one value (1)
-    ///  * A step of equal the start and end points (i.e. 1-1/3) is simplified into one value (1)
+    ///  * A step of equal start and end points (i.e. 1-1/3) is simplified into one value (1)
     ///  * A step where the start is equal to the max value of E (i.e. 59/3) is simplified into one value (59)
     ///  * A step where the step value is one (i.e. 5/1 or 5-30/1) is simplified into a range (5-59 or 5-30)
     pub fn normalize(self) -> OrsExpr<E> {
