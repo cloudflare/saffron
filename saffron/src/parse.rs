@@ -4,6 +4,7 @@
 #[cfg(not(feature = "std"))]
 use alloc::vec::{self, Vec};
 
+use crate::internal::Sealed;
 use core::cmp::Ordering;
 use core::convert::TryFrom;
 use core::fmt::{self, Display, Formatter};
@@ -23,6 +24,8 @@ use nom::{
 #[cfg(feature = "std")]
 use std::vec;
 
+pub use crate::describe::*;
+
 /// An error returned if an expression type value is out of range.
 #[derive(Debug)]
 pub struct ValueOutOfRangeError;
@@ -35,11 +38,6 @@ impl Display for ValueOutOfRangeError {
 
 #[cfg(feature = "std")]
 impl std::error::Error for ValueOutOfRangeError {}
-
-mod internal {
-    pub trait Sealed {}
-}
-use internal::Sealed;
 
 /// A trait implemented for expression values that defines a MIN value and a MAX value.
 pub trait ExprValue: Sized + Sealed {
@@ -239,6 +237,45 @@ impl From<Month> for u8 {
         m.0 - 1
     }
 }
+impl From<chrono::Month> for Month {
+    fn from(m: chrono::Month) -> Self {
+        use chrono::Month::*;
+        match m {
+            January => Self(1),
+            February => Self(2),
+            March => Self(3),
+            April => Self(4),
+            May => Self(5),
+            June => Self(6),
+            July => Self(7),
+            August => Self(8),
+            September => Self(9),
+            October => Self(10),
+            November => Self(11),
+            December => Self(12),
+        }
+    }
+}
+impl From<Month> for chrono::Month {
+    fn from(Month(m): Month) -> chrono::Month {
+        use chrono::Month::*;
+        match m {
+            1 => January,
+            2 => February,
+            3 => March,
+            4 => April,
+            5 => May,
+            6 => June,
+            7 => July,
+            8 => August,
+            9 => September,
+            10 => October,
+            11 => November,
+            12 => December,
+            _ => unreachable!(),
+        }
+    }
+}
 impl TryFrom<u8> for Month {
     type Error = ValueOutOfRangeError;
 
@@ -340,6 +377,12 @@ impl From<chrono::Weekday> for DayOfWeek {
     #[inline]
     fn from(w: chrono::Weekday) -> Self {
         Self(w)
+    }
+}
+impl From<DayOfWeek> for chrono::Weekday {
+    #[inline]
+    fn from(DayOfWeek(w): DayOfWeek) -> Self {
+        w
     }
 }
 impl TryFrom<u8> for DayOfWeek {
@@ -597,6 +640,36 @@ pub struct CronExpr {
     pub months: Expr<Month>,
     /// The day of the week part of the expression.
     pub dows: DayOfWeekExpr,
+}
+
+/// A formatter for displaying a cron expression description in a specified language
+#[derive(Debug, Clone, Copy)]
+pub struct LanguageFormatter<'a, L> {
+    expr: &'a CronExpr,
+    lang: L,
+}
+
+impl<'a, L: Language> Display for LanguageFormatter<'a, L> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        self.lang.fmt_expr(self.expr, f)
+    }
+}
+
+impl CronExpr {
+    /// Returns a formatter to display the cron expression in the provided language
+    ///
+    /// # Example
+    /// ```
+    /// use saffron::parse::{CronExpr, English};
+    ///
+    /// let cron: CronExpr = "* * * * *".parse().expect("Valid cron expression");
+    ///
+    /// let description = cron.describe(English::default()).to_string();
+    /// assert_eq!("Every minute", description);
+    /// ```
+    pub fn describe<L: Language>(&self, lang: L) -> LanguageFormatter<L> {
+        LanguageFormatter { expr: self, lang }
+    }
 }
 
 /// An error indicating that the provided cron expression failed to parse

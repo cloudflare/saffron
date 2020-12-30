@@ -5,6 +5,7 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
+mod describe;
 pub mod parse;
 
 use chrono::prelude::*;
@@ -14,6 +15,10 @@ use core::fmt::Debug;
 use core::str::FromStr;
 
 use self::parse::{CronExpr, ExprValue, OrsExpr};
+
+pub(crate) mod internal {
+    pub trait Sealed {}
+}
 
 /// Returns the number of days in the month, 28-31
 fn days_in_month(date: Date<Utc>) -> u32 {
