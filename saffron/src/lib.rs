@@ -1066,7 +1066,7 @@ impl Cron {
     /// let _ = cron.clone().iter(start..);
     ///
     /// // all matching times in the next 30 minutes
-    /// let _ = cron.clone().iter(start..(start + chrono::Duration::from_secs(60 * 30)));
+    /// let _ = cron.clone().iter(start..(start + chrono::Duration::seconds(60 * 30)));
     /// ```
     pub fn iter<R: RangeBounds<DateTime<Utc>>>(self, bounds: R) -> CronTimesIter {
         if !self.any() {
@@ -1079,14 +1079,14 @@ impl Cron {
         let front = match bounds.start_bound() {
             Bound::Unbounded => Some(chrono::MIN_DATETIME),
             Bound::Included(start) => Some(*start),
-            Bound::Excluded(start) => previous_minute(*start),
+            Bound::Excluded(start) => next_minute(*start),
         }
         .map(minute_floor);
 
         let back = match bounds.end_bound() {
             Bound::Unbounded => Some(chrono::MAX_DATETIME),
             Bound::Included(end) => Some(*end),
-            Bound::Excluded(end) => next_minute(*end),
+            Bound::Excluded(end) => previous_minute(*end),
         }
         .map(minute_floor);
 
@@ -1209,8 +1209,10 @@ impl Cron {
         bound: Option<NaiveTime>,
     ) -> Result<Option<NaiveTime>, OutOfBound> {
         if self.hours.contains_hour(time) {
-            if let next @ Some(_) = self.find_next_minute(time) {
-                return Ok(next);
+            match (self.find_next_minute(time), bound) {
+                (Some(next_minute), Some(bound)) if next_minute > bound => return Err(OutOfBound),
+                (Some(next_minute), _) => return Ok(Some(next_minute)),
+                (None, _) => {}
             }
         }
 
@@ -1390,7 +1392,7 @@ impl Cron {
         let bottom_cleared = (map >> current_month) << current_month;
         let trailing_zeros = bottom_cleared.trailing_zeros();
         if trailing_zeros < Months::BITS as u32 {
-            Utc.ymd_opt(date.year(), trailing_zeros, 1).single()
+            Utc.ymd_opt(date.year(), trailing_zeros + 1, 1).single()
         } else {
             None
         }
@@ -1410,21 +1412,23 @@ impl Cron {
         }
 
         loop {
+            date = match next_month_in_year(date) {
+                Some(next_month) if next_month > bound => return Err(OutOfBound),
+                Some(next_month) => next_month,
+                None => return Ok(None),
+            };
+
             date = match self.find_next_month(date) {
                 Some(date) if date > bound => return Err(OutOfBound),
                 Some(date) => date,
                 None => return Ok(None),
             };
 
-            date = match self.find_next_day(date) {
+            match self.find_next_day(date) {
                 Some(next_day) if next_day > bound => return Err(OutOfBound),
                 Some(next_day) => return Ok(Some(next_day)),
-                None => match next_month_in_year(date) {
-                    Some(next_month) if next_month > bound => return Err(OutOfBound),
-                    Some(next_month) => next_month,
-                    None => return Ok(None),
-                },
-            };
+                None => {}
+            }
         }
     }
 }
@@ -1510,13 +1514,18 @@ impl FusedIterator for CronTimesIter {}
 mod tests {
     use super::*;
 
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+
+    const FORMAT: &str = "%F %R";
+
     fn check_does_contain(cron: &str, dates: impl IntoIterator<Item = impl AsRef<str>>) {
         let parsed: Cron = cron.parse().unwrap();
 
-        for date in dates
-            .into_iter()
-            .map(|s| s.as_ref().parse::<DateTime<Utc>>().unwrap())
-        {
+        for date in dates.into_iter().map(|s| {
+            Utc.datetime_from_str(s.as_ref(), FORMAT)
+                .expect("Failed to parse expected date")
+        }) {
             assert!(
                 parsed.contains(date),
                 "Cron \"{}\" should contain {}. Compiled: {:#?}",
@@ -1530,10 +1539,10 @@ mod tests {
     fn check_does_not_contain(cron: &str, dates: impl IntoIterator<Item = impl AsRef<str>>) {
         let parsed: Cron = cron.parse().unwrap();
 
-        for date in dates
-            .into_iter()
-            .map(|s| s.as_ref().parse::<DateTime<Utc>>().unwrap())
-        {
+        for date in dates.into_iter().map(|s| {
+            Utc.datetime_from_str(s.as_ref(), FORMAT)
+                .expect("Failed to parse expected date")
+        }) {
             assert!(
                 !parsed.contains(date),
                 "Cron \"{}\" shouldn't contain {}. Compiled {:#?}",
@@ -1549,10 +1558,10 @@ mod tests {
         check_does_contain(
             "* * * * *",
             &[
-                "1970-01-1T00:00:00+00:00",
-                "2016-11-08T23:53:57+00:00",
-                "2020-07-04T15:42:30+00:00",
-                "2072-02-29T01:15:23+00:00",
+                "1970-01-01 00:00",
+                "2016-11-08 23:53",
+                "2020-07-04 15:42",
+                "2072-02-29 01:15",
             ],
         );
     }
@@ -1563,17 +1572,22 @@ mod tests {
 
         check_does_contain(
             cron,
-            &["2020-08-23T00:05:00+00:00", "2020-08-23T00:05:30+00:00"],
+            &[
+                "2020-08-23 00:05",
+                "2021-08-23 00:05",
+                "2022-08-23 00:05",
+                "2023-08-23 00:05",
+            ],
         );
 
         check_does_not_contain(
             cron,
             &[
-                "1970-01-1T00:00:00+00:00",
-                "2016-11-08T23:53:57+00:00",
-                "2020-07-04T15:42:30+00:00",
-                "2072-02-29T01:15:23+00:00",
-                "2020-08-23T11:05:00+00:00",
+                "1970-01-01 00:00",
+                "2016-11-08 23:53",
+                "2020-07-04 15:42",
+                "2072-02-29 01:15",
+                "2020-08-23 11:05",
             ],
         );
     }
@@ -1585,17 +1599,22 @@ mod tests {
 
         check_does_contain(
             cron,
-            &["2020-08-23T00:05:00+00:00", "2020-08-23T00:05:30+00:00"],
+            &[
+                "2020-08-23 00:05",
+                "2021-08-23 00:05",
+                "2022-08-23 00:05",
+                "2023-08-23 00:05",
+            ],
         );
 
         check_does_not_contain(
             cron,
             &[
-                "1970-01-01T00:00:00+00:00",
-                "2016-11-08T23:53:57+00:00",
-                "2020-07-04T15:42:30+00:00",
-                "2072-02-29T01:15:23+00:00",
-                "2020-08-23T11:05:00+00:00",
+                "1970-01-01 00:00",
+                "2016-11-08 23:53",
+                "2020-07-04 15:42",
+                "2072-02-29 01:15",
+                "2020-08-23 11:05",
             ],
         );
     }
@@ -1609,22 +1628,22 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2020-01-31T00:59:00+00:00",
-                "2020-01-31T00:00:00+00:00",
-                "2020-01-31T23:59:00+00:00",
-                "2020-01-31T23:00:00+00:00",
-                "2020-01-01T00:59:00+00:00",
-                "2020-01-01T00:00:00+00:00",
-                "2020-01-01T23:59:00+00:00",
-                "2020-01-01T23:00:00+00:00",
-                "2020-12-31T00:59:00+00:00",
-                "2020-12-31T00:00:00+00:00",
-                "2020-12-31T23:59:00+00:00",
-                "2020-12-31T23:00:00+00:00",
-                "2020-12-01T00:59:00+00:00",
-                "2020-12-01T00:00:00+00:00",
-                "2020-12-01T23:59:00+00:00",
-                "2020-12-01T23:00:00+00:00",
+                "2020-01-31 00:59",
+                "2020-01-31 00:00",
+                "2020-01-31 23:59",
+                "2020-01-31 23:00",
+                "2020-01-01 00:59",
+                "2020-01-01 00:00",
+                "2020-01-01 23:59",
+                "2020-01-01 23:00",
+                "2020-12-31 00:59",
+                "2020-12-31 00:00",
+                "2020-12-31 23:59",
+                "2020-12-31 23:00",
+                "2020-12-01 00:59",
+                "2020-12-01 00:00",
+                "2020-12-01 23:59",
+                "2020-12-01 23:00",
             ],
         );
 
@@ -1634,10 +1653,10 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2020-01-04T00:00:00+00:00",
-                "2020-01-05T00:00:00+00:00",
-                "2020-01-11T00:00:00+00:00",
-                "2020-01-12T00:00:00+00:00",
+                "2020-01-04 00:00",
+                "2020-01-05 00:00",
+                "2020-01-11 00:00",
+                "2020-01-12 00:00",
             ],
         );
     }
@@ -1649,11 +1668,11 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2020-01-01T00:00:00+00:00",
-                "2020-01-01T00:59:00+00:00",
-                "2020-01-01T23:59:00+00:00",
-                "2020-01-31T23:59:00+00:00",
-                "2020-12-31T23:59:00+00:00",
+                "2020-01-01 00:00",
+                "2020-01-01 00:59",
+                "2020-01-01 23:59",
+                "2020-01-31 23:59",
+                "2020-12-31 23:59",
             ],
         );
     }
@@ -1665,10 +1684,10 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "1970-01-1T00:00:00+00:00",
-                "2016-11-08T23:53:57+00:00",
-                "2020-07-04T15:42:30+00:00",
-                "2072-02-29T01:15:23+00:00",
+                "1970-01-01 00:00",
+                "2016-11-08 23:53",
+                "2020-07-04 15:42",
+                "2072-02-29 01:15",
             ],
         );
 
@@ -1677,10 +1696,10 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "1970-01-1T00:00:00+00:00",
-                "2016-11-08T23:53:57+00:00",
-                "2020-07-04T15:42:30+00:00",
-                "2072-02-29T01:15:23+00:00",
+                "1970-01-01 00:00",
+                "2016-11-08 23:53",
+                "2020-07-04 15:42",
+                "2072-02-29 01:15",
             ],
         );
     }
@@ -1692,14 +1711,14 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2400-02-29T00:00:00+00:00",
-                "2300-02-28T00:00:00+00:00",
-                "2200-02-28T00:00:00+00:00",
-                "2100-02-28T00:00:00+00:00",
-                "2024-02-29T00:00:00+00:00",
-                "2020-02-29T00:00:00+00:00",
-                "2004-02-29T00:00:00+00:00",
-                "2000-02-29T00:00:00+00:00",
+                "2400-02-29 00:00",
+                "2300-02-28 00:00",
+                "2200-02-28 00:00",
+                "2100-02-28 00:00",
+                "2024-02-29 00:00",
+                "2020-02-29 00:00",
+                "2004-02-29 00:00",
+                "2000-02-29 00:00",
             ],
         );
     }
@@ -1711,28 +1730,28 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2400-02-28T00:00:00+00:00",
-                "2300-02-27T00:00:00+00:00",
-                "2200-02-27T00:00:00+00:00",
-                "2100-02-27T00:00:00+00:00",
-                "2024-02-28T00:00:00+00:00",
-                "2020-02-28T00:00:00+00:00",
-                "2004-02-28T00:00:00+00:00",
-                "2000-02-28T00:00:00+00:00",
+                "2400-02-28 00:00",
+                "2300-02-27 00:00",
+                "2200-02-27 00:00",
+                "2100-02-27 00:00",
+                "2024-02-28 00:00",
+                "2020-02-28 00:00",
+                "2004-02-28 00:00",
+                "2000-02-28 00:00",
             ],
         );
 
         check_does_not_contain(
             cron,
             &[
-                "2400-02-29T00:00:00+00:00",
-                "2300-02-28T00:00:00+00:00",
-                "2200-02-28T00:00:00+00:00",
-                "2100-02-28T00:00:00+00:00",
-                "2024-02-29T00:00:00+00:00",
-                "2020-02-29T00:00:00+00:00",
-                "2004-02-29T00:00:00+00:00",
-                "2000-02-29T00:00:00+00:00",
+                "2400-02-29 00:00",
+                "2300-02-28 00:00",
+                "2200-02-28 00:00",
+                "2100-02-28 00:00",
+                "2024-02-29 00:00",
+                "2020-02-29 00:00",
+                "2004-02-29 00:00",
+                "2000-02-29 00:00",
             ],
         );
     }
@@ -1741,20 +1760,14 @@ mod tests {
     fn parse_check_offset_weekend_start_months() {
         let cron = "0 0 L-30W * *";
 
-        check_does_contain(
-            cron,
-            &["2021-05-3T00:00:00+00:00", "2022-01-3T00:00:00+00:00"],
-        );
+        check_does_contain(cron, &["2021-05-3 00:00", "2022-01-3 00:00"]);
     }
 
     #[test]
     fn parse_check_offset_weekend_start_months_beyond_days() {
         let cron = "0 0 L-28W FEB *";
 
-        check_does_not_contain(
-            cron,
-            &["2021-05-3T00:00:00+00:00", "2022-01-3T00:00:00+00:00"],
-        );
+        check_does_not_contain(cron, &["2021-05-3 00:00", "2022-01-3 00:00"]);
     }
 
     #[test]
@@ -1764,9 +1777,9 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2025-05-30T00:00:00+00:00", // Last day is a Saturday
-                "2021-05-31T00:00:00+00:00", // Last day is a Monday
-                "2020-05-29T00:00:00+00:00", // Last day is a Sunday
+                "2025-05-30 00:00", // Last day is a Saturday
+                "2021-05-31 00:00", // Last day is a Monday
+                "2020-05-29 00:00", // Last day is a Sunday
             ],
         );
     }
@@ -1778,9 +1791,9 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2025-05-30T00:00:00+00:00", // Offset last day is a Friday
-                "2021-05-31T00:00:00+00:00", // Offset last day is a Sunday
-                "2020-05-29T00:00:00+00:00", // Offset last day is a Saturday
+                "2025-05-30 00:00", // Offset last day is a Friday
+                "2021-05-31 00:00", // Offset last day is a Sunday
+                "2020-05-29 00:00", // Offset last day is a Saturday
             ],
         );
     }
@@ -1792,9 +1805,9 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2020-05-01T00:00:00+00:00", // First day is a Friday
-                "2022-05-02T00:00:00+00:00", // First day is a Sunday
-                "2021-05-03T00:00:00+00:00", // First day is a Saturday
+                "2020-05-01 00:00", // First day is a Friday
+                "2022-05-02 00:00", // First day is a Sunday
+                "2021-05-03 00:00", // First day is a Saturday
             ],
         )
     }
@@ -1806,22 +1819,22 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2020-01-25T00:00:00+00:00",
-                "2020-02-29T00:00:00+00:00",
-                "2020-03-28T00:00:00+00:00",
-                "2020-04-25T00:00:00+00:00",
-                "2020-05-30T00:00:00+00:00",
+                "2020-01-25 00:00",
+                "2020-02-29 00:00",
+                "2020-03-28 00:00",
+                "2020-04-25 00:00",
+                "2020-05-30 00:00",
             ],
         );
 
         check_does_not_contain(
             cron,
             &[
-                "2020-01-31T00:00:00+00:00",
-                "2020-02-28T00:00:00+00:00",
-                "2020-03-31T00:00:00+00:00",
-                "2020-04-30T00:00:00+00:00",
-                "2020-05-31T00:00:00+00:00",
+                "2020-01-31 00:00",
+                "2020-02-28 00:00",
+                "2020-03-31 00:00",
+                "2020-04-30 00:00",
+                "2020-05-31 00:00",
             ],
         )
     }
@@ -1833,21 +1846,21 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2020-02-29T00:00:00+00:00",
-                "2020-05-30T00:00:00+00:00",
-                "2020-08-29T00:00:00+00:00",
-                "2020-10-31T00:00:00+00:00",
+                "2020-02-29 00:00",
+                "2020-05-30 00:00",
+                "2020-08-29 00:00",
+                "2020-10-31 00:00",
             ],
         );
 
         check_does_not_contain(
             cron,
             &[
-                "2020-01-31T00:00:00+00:00",
-                "2020-02-28T00:00:00+00:00",
-                "2020-03-31T00:00:00+00:00",
-                "2020-04-30T00:00:00+00:00",
-                "2020-05-31T00:00:00+00:00",
+                "2020-01-31 00:00",
+                "2020-02-28 00:00",
+                "2020-03-31 00:00",
+                "2020-04-30 00:00",
+                "2020-05-31 00:00",
             ],
         )
     }
@@ -1860,12 +1873,12 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2020-01-01T00:00:00+00:00",
-                "2020-01-01T00:15:00+00:00",
-                "2020-01-01T00:30:00+00:00",
-                "2020-01-01T00:40:00+00:00",
-                "2020-01-01T00:45:00+00:00",
-                "2020-01-01T00:50:00+00:00",
+                "2020-01-01 00:00",
+                "2020-01-01 00:15",
+                "2020-01-01 00:30",
+                "2020-01-01 00:40",
+                "2020-01-01 00:45",
+                "2020-01-01 00:50",
             ],
         )
     }
@@ -1878,12 +1891,80 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2020-01-01T20:00:00+00:00",
-                "2020-01-01T22:00:00+00:00",
-                "2020-01-01T00:00:00+00:00",
-                "2020-01-01T02:00:00+00:00",
-                "2020-01-01T04:00:00+00:00",
+                "2020-01-01 20:00",
+                "2020-01-01 22:00",
+                "2020-01-01 00:00",
+                "2020-01-01 02:00",
+                "2020-01-01 04:00",
             ],
         );
+    }
+
+    /// Tests for future time iteration
+    mod iter {
+        use super::*;
+
+        fn assert<'a, R: RangeBounds<&'a str>>(cron: &str, range: R, times: &[&str]) {
+            let fmt = "%F %R";
+            let cron = cron
+                .parse::<Cron>()
+                .expect("Failed to parse cron expression");
+            let start = match range.start_bound() {
+                Bound::Unbounded => Bound::Unbounded,
+                Bound::Included(start) => Bound::Included(
+                    Utc.datetime_from_str(start, fmt)
+                        .expect("Failed to parse start date"),
+                ),
+                Bound::Excluded(start) => Bound::Excluded(
+                    Utc.datetime_from_str(start, fmt)
+                        .expect("Failed to parse start date"),
+                ),
+            };
+            let end = match range.end_bound() {
+                Bound::Unbounded => Bound::Unbounded,
+                Bound::Included(end) => Bound::Included(
+                    Utc.datetime_from_str(end, fmt)
+                        .expect("Failed to parse start date"),
+                ),
+                Bound::Excluded(end) => Bound::Excluded(
+                    Utc.datetime_from_str(end, fmt)
+                        .expect("Failed to parse start date"),
+                ),
+            };
+
+            let results = cron.iter((start, end)).collect::<Vec<_>>();
+            let times = times
+                .into_iter()
+                .map(|&time| {
+                    Utc.datetime_from_str(time, fmt)
+                        .expect("Failed to parse expected date")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(times, results);
+        }
+
+        #[test]
+        fn inclusive_bound_range_has_one_item() {
+            assert(
+                "* * * * *",
+                (
+                    Bound::Included("2021-01-01 00:00"),
+                    Bound::Included("2021-01-01 00:00"),
+                ),
+                &["2021-01-01 00:00"],
+            );
+        }
+
+        #[test]
+        fn exclusive_bound_range_over_three_minutes_only_has_one() {
+            assert(
+                "* * * * *",
+                (
+                    Bound::Excluded("2021-01-01 00:00"),
+                    Bound::Excluded("2021-01-01 00:02"),
+                ),
+                &["2021-01-01 00:01"],
+            );
+        }
     }
 }
