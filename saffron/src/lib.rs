@@ -1517,6 +1517,9 @@ mod tests {
     #[cfg(not(feature = "std"))]
     use alloc::vec::Vec;
 
+    #[cfg(not(feature = "std"))]
+    use alloc::string::ToString;
+
     const FORMAT: &str = "%F %R";
 
     fn check_does_contain(cron: &str, dates: impl IntoIterator<Item = impl AsRef<str>>) {
@@ -1905,29 +1908,28 @@ mod tests {
         use super::*;
 
         fn assert<'a, R: RangeBounds<&'a str>>(cron: &str, range: R, times: &[&str]) {
-            let fmt = "%F %R";
             let cron = cron
                 .parse::<Cron>()
                 .expect("Failed to parse cron expression");
             let start = match range.start_bound() {
                 Bound::Unbounded => Bound::Unbounded,
                 Bound::Included(start) => Bound::Included(
-                    Utc.datetime_from_str(start, fmt)
+                    Utc.datetime_from_str(start, FORMAT)
                         .expect("Failed to parse start date"),
                 ),
                 Bound::Excluded(start) => Bound::Excluded(
-                    Utc.datetime_from_str(start, fmt)
+                    Utc.datetime_from_str(start, FORMAT)
                         .expect("Failed to parse start date"),
                 ),
             };
             let end = match range.end_bound() {
                 Bound::Unbounded => Bound::Unbounded,
                 Bound::Included(end) => Bound::Included(
-                    Utc.datetime_from_str(end, fmt)
+                    Utc.datetime_from_str(end, FORMAT)
                         .expect("Failed to parse start date"),
                 ),
                 Bound::Excluded(end) => Bound::Excluded(
-                    Utc.datetime_from_str(end, fmt)
+                    Utc.datetime_from_str(end, FORMAT)
                         .expect("Failed to parse start date"),
                 ),
             };
@@ -1936,7 +1938,7 @@ mod tests {
             let times = times
                 .into_iter()
                 .map(|&time| {
-                    Utc.datetime_from_str(time, fmt)
+                    Utc.datetime_from_str(time, FORMAT)
                         .expect("Failed to parse expected date")
                 })
                 .collect::<Vec<_>>();
@@ -1964,6 +1966,136 @@ mod tests {
                     Bound::Excluded("2021-01-01 00:02"),
                 ),
                 &["2021-01-01 00:01"],
+            );
+        }
+
+        #[test]
+        fn cron_without_any_yields_none() {
+            assert(
+                "* * 31 2 *",
+                (Bound::<&str>::Unbounded, Bound::<&str>::Unbounded),
+                &[],
+            );
+        }
+
+        #[test]
+        fn start_beyond_end_bound_yields_none() {
+            assert(
+                "* * * * *",
+                (
+                    Bound::Included("2021-01-01 00:01"),
+                    Bound::Included("2021-01-01 00:00"),
+                ),
+                &[],
+            );
+        }
+
+        #[test]
+        fn start_max_exclusive_yields_none() {
+            assert(
+                "* * * * *",
+                (
+                    Bound::Excluded(&chrono::MAX_DATETIME.format(FORMAT).to_string().as_str()),
+                    Bound::Unbounded,
+                ),
+                &[],
+            )
+        }
+
+        #[test]
+        fn end_min_exclusive_yields_none() {
+            assert(
+                "* * * * *",
+                (
+                    Bound::Unbounded,
+                    Bound::Excluded(chrono::MIN_DATETIME.format(FORMAT).to_string().as_str()),
+                ),
+                &[],
+            )
+        }
+
+        #[test]
+        fn simple_10_min_step_over_30_min() {
+            assert(
+                "*/10 * * * *",
+                "1970-01-01 00:00".."1970-01-01 00:30",
+                // doesn't include 00:30 since .. is exclusive end
+                &["1970-01-01 00:00", "1970-01-01 00:10", "1970-01-01 00:20"],
+            )
+        }
+
+        #[test]
+        fn simple_10_min_step_over_30_min_inclusive() {
+            assert(
+                "*/10 * * * *",
+                "1970-01-01 00:00"..="1970-01-01 00:30",
+                &[
+                    "1970-01-01 00:00",
+                    "1970-01-01 00:10",
+                    "1970-01-01 00:20",
+                    "1970-01-01 00:30",
+                ],
+            )
+        }
+
+        #[test]
+        fn feb_edges() {
+            // fun edge cases in february
+            assert(
+                "0 0 29 2 *",
+                "1970-01-01 00:00".."2021-01-01 00:00",
+                &[
+                    "1972-02-29 00:00",
+                    "1976-02-29 00:00",
+                    "1980-02-29 00:00",
+                    "1984-02-29 00:00",
+                    "1988-02-29 00:00",
+                    "1992-02-29 00:00",
+                    "1996-02-29 00:00",
+                    "2000-02-29 00:00",
+                    "2004-02-29 00:00",
+                    "2008-02-29 00:00",
+                    "2012-02-29 00:00",
+                    "2016-02-29 00:00",
+                    "2020-02-29 00:00",
+                ],
+            );
+
+            assert(
+                "0 0 L-28W 2 *",
+                "1970-01-01 00:00".."2021-01-01 00:00",
+                &[
+                    "1972-02-01 00:00",
+                    "1976-02-02 00:00",
+                    "1980-02-01 00:00",
+                    "1984-02-01 00:00",
+                    "1988-02-01 00:00",
+                    "1992-02-03 00:00",
+                    "1996-02-01 00:00",
+                    "2000-02-01 00:00",
+                    "2004-02-02 00:00",
+                    "2008-02-01 00:00",
+                    "2012-02-01 00:00",
+                    "2016-02-01 00:00",
+                    "2020-02-03 00:00",
+                ],
+            );
+
+            assert(
+                "59 12 LW 2 *",
+                "1970-01-01 00:00".."1980-01-01 00:00",
+                &[
+                    "1970-02-27 12:59",
+                    "1971-02-26 12:59",
+                    "1972-02-29 12:59",
+                    "1973-02-28 12:59",
+                    "1974-02-28 12:59",
+                    "1975-02-28 12:59",
+                    "1976-02-27 12:59",
+                    "1977-02-28 12:59",
+                    "1978-02-28 12:59",
+                    "1979-02-28 12:59",
+                ],
             );
         }
     }
