@@ -1092,7 +1092,7 @@ impl Cron {
 
         CronTimesIter {
             cron: self,
-            bounds: front.zip(back).filter(|(front, back)| front <= back),
+            bounds: front.zip(back).filter(|(start, end)| front <= back),
         }
     }
 
@@ -1109,10 +1109,10 @@ impl Cron {
     /// assert_eq!(cron.next_from(date), Some(date));
     /// ```
     #[inline]
-    pub fn next_from(&self, dt: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        let dt = minute_floor(dt);
+    pub fn next_from(&self, start: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        let start = minute_floor(start);
         if self.any() {
-            self.find_next(dt, chrono::MAX_DATETIME)
+            self.find_next(start, chrono::MAX_DATETIME)
         } else {
             None
         }
@@ -1130,10 +1130,10 @@ impl Cron {
     /// assert_eq!(cron.next_after(date), date.with_minute(10));
     /// ```
     #[inline]
-    pub fn next_after(&self, dt: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        let dt = next_minute(minute_floor(dt))?;
+    pub fn next_after(&self, start: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        let start = next_minute(minute_floor(start))?;
         if self.any() {
-            self.find_next(dt, chrono::MAX_DATETIME)
+            self.find_next(start, chrono::MAX_DATETIME)
         } else {
             None
         }
@@ -1141,21 +1141,22 @@ impl Cron {
 
     /// Finds the next (current inclusive) matching date time in the future within the specified
     /// date time bound, or none if the search exceeds the bound.
-    fn find_next(&self, dt: DateTime<Utc>, bound: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        if self.contains_date(dt.date()) {
-            match self.find_next_time(dt.time(), maybe_time_bound(dt.date(), bound)) {
-                Ok(Some(next_time)) => return dt.date().and_time(next_time),
+    fn find_next(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        if self.contains_date(start.date()) {
+            match self.find_next_time(start.time(), time_bound_for_date(start.date(), end)) {
+                Ok(Some(next_time)) => return start.date().and_time(next_time),
                 Err(OutOfBound) => return None,
                 Ok(None) => {}
             }
         }
 
         let midnight = NaiveTime::from_hms(0, 0, 0);
-        let mut search_date = dt.date().succ_opt().filter(|&t| t <= bound.date())?;
+        let mut search_date = start.date().succ_opt().filter(|&t| t <= end.date())?;
         loop {
-            match self.find_next_date(search_date, bound.date()) {
+            match self.find_next_date(search_date, end.date()) {
                 Ok(Some(next_date)) => {
-                    return match self.find_next_time(midnight, maybe_time_bound(next_date, bound)) {
+                    return match self.find_next_time(midnight, time_bound_for_date(next_date, end))
+                    {
                         Ok(Some(next_time)) => next_date.and_time(next_time),
                         _ => None,
                     }
@@ -1165,7 +1166,7 @@ impl Cron {
                     search_date = Utc
                         .ymd_opt(search_date.year() + 1, 1, 1)
                         .single()
-                        .filter(|&date| date <= bound.date())?;
+                        .filter(|&date| date <= end.date())?;
                 }
             }
         }
@@ -1173,16 +1174,16 @@ impl Cron {
 
     /// Gets the next minute (current inclusive) matching the cron expression, or none if the current
     /// minute / no upcoming minute in the hour matches.
-    fn find_next_minute(&self, time: NaiveTime) -> Option<NaiveTime> {
+    fn find_next_minute(&self, start: NaiveTime) -> Option<NaiveTime> {
         let Minutes(map) = self.minutes;
-        let current_minute = time.minute();
+        let current_minute = start.minute();
         // clear the minutes we're already past
         let bottom_cleared = (map >> current_minute) << current_minute;
         // count trailing zeros to find the first set. if none is set, we get back the number of
         // bits in the integer
         let trailing_zeros = bottom_cleared.trailing_zeros();
         if trailing_zeros < Minutes::BITS as u32 {
-            time.with_minute(trailing_zeros)
+            start.with_minute(trailing_zeros)
         } else {
             None
         }
@@ -1190,9 +1191,9 @@ impl Cron {
 
     /// Gets the next hour (current inclusive) in the cron expression, or none if the current hour /
     /// no upcoming hour in the day matches.
-    fn find_next_hour(&self, time: NaiveTime) -> Option<NaiveTime> {
+    fn find_next_hour(&self, start: NaiveTime) -> Option<NaiveTime> {
         let Hours(map) = self.hours;
-        let current_hour = time.hour();
+        let current_hour = start.hour();
         let bottom_cleared = (map >> current_hour) << current_hour;
         let trailing_zeros = bottom_cleared.trailing_zeros();
         if trailing_zeros < Hours::BITS as u32 {
@@ -1205,23 +1206,23 @@ impl Cron {
     /// Finds the next matching time, limited inclusive by a optional bound.
     fn find_next_time(
         &self,
-        time: NaiveTime,
-        bound: Option<NaiveTime>,
+        start: NaiveTime,
+        end: Option<NaiveTime>,
     ) -> Result<Option<NaiveTime>, OutOfBound> {
-        if self.hours.contains_hour(time) {
-            match (self.find_next_minute(time), bound) {
-                (Some(next_minute), Some(bound)) if next_minute > bound => return Err(OutOfBound),
+        if self.hours.contains_hour(start) {
+            match (self.find_next_minute(start), end) {
+                (Some(next_minute), Some(end)) if next_minute > end => return Err(OutOfBound),
                 (Some(next_minute), _) => return Ok(Some(next_minute)),
                 (None, _) => {}
             }
         }
 
-        let next_minute = NaiveTime::from_hms_opt(time.hour() + 1, 0, 0)
+        let next_minute = NaiveTime::from_hms_opt(start.hour() + 1, 0, 0)
             .and_then(|time| self.find_next_hour(time))
             .and_then(|time| self.find_next_minute(time));
 
-        match (next_minute, bound) {
-            (Some(next_minute), Some(bound)) if next_minute > bound => Err(OutOfBound),
+        match (next_minute, end) {
+            (Some(next_minute), Some(end)) if next_minute > end => Err(OutOfBound),
             (Some(next_minute), _) => Ok(Some(next_minute)),
             (None, _) => Ok(None),
         }
@@ -1229,14 +1230,14 @@ impl Cron {
 
     /// Gets the next matching (current inclusive) day of the month or day of the week that
     /// matches the cron expression. The returned matching day is a value 0-30.
-    fn find_next_day(&self, date: Date<Utc>) -> Option<Date<Utc>> {
+    fn find_next_day(&self, start: Date<Utc>) -> Option<Date<Utc>> {
         match (self.dom.is_star(), self.dow.is_star()) {
-            (true, true) => Some(date),
-            (true, false) => self.find_next_weekday(date),
-            (false, true) => self.find_next_day_of_month(date),
+            (true, true) => Some(start),
+            (true, false) => self.find_next_weekday(start),
+            (false, true) => self.find_next_day_of_month(start),
             (false, false) => {
-                let next_weekday = self.find_next_weekday(date);
-                let next_day = self.find_next_day_of_month(date);
+                let next_weekday = self.find_next_weekday(start);
+                let next_day = self.find_next_day_of_month(start);
                 match (next_day, next_weekday) {
                     (Some(day), Some(weekday)) => Some(cmp::min(day, weekday)),
                     (Some(day), None) => Some(day),
@@ -1248,73 +1249,73 @@ impl Cron {
     }
 
     /// Gets the next matching (current inclusive) day of the month that matches the cron expression.
-    fn find_next_day_of_month(&self, date: Date<Utc>) -> Option<Date<Utc>> {
-        let days_in_month = days_in_month(date);
+    fn find_next_day_of_month(&self, start: Date<Utc>) -> Option<Date<Utc>> {
+        let days_in_month = days_in_month(start);
         match self.dom.kind() {
             DaysOfMonthKind::Last => match self.dom.one_value() {
                 // 'L'
-                0 => date.with_day(days_in_month),
+                0 => start.with_day(days_in_month),
                 // 'L-3'
-                offset => date.with_day(days_in_month.checked_sub(offset as u32)?),
+                offset => start.with_day(days_in_month.checked_sub(offset as u32)?),
             },
             DaysOfMonthKind::LastWeekday => match self.dom.one_value() {
                 // 'LW'
                 0 => {
-                    let next_date = date.with_day(days_in_month)?;
+                    let next_date = start.with_day(days_in_month)?;
                     match next_date.weekday() {
-                        Weekday::Sat => date.with_day(days_in_month - 1),
-                        Weekday::Sun => date.with_day(days_in_month - 2),
+                        Weekday::Sat => start.with_day(days_in_month - 1),
+                        Weekday::Sun => start.with_day(days_in_month - 2),
                         _ => Some(next_date),
                     }
                 }
                 // 'L-3W'
                 offset => {
                     let expected_day = days_in_month.checked_sub(offset as u32)?;
-                    let next_date = date.with_day(expected_day)?;
+                    let next_date = start.with_day(expected_day)?;
                     match next_date.weekday() {
-                        Weekday::Sat if expected_day == 1 => date.with_day(3),
-                        Weekday::Sat => date.with_day(expected_day - 1),
-                        Weekday::Sun => date.with_day(expected_day + 1),
+                        Weekday::Sat if expected_day == 1 => start.with_day(3),
+                        Weekday::Sat => start.with_day(expected_day - 1),
+                        Weekday::Sun => start.with_day(expected_day + 1),
                         _ => Some(next_date),
                     }
                 }
             },
             DaysOfMonthKind::Weekday => {
                 let expected_day = self.dom.one_value() as u32;
-                let new_date = date.with_day(expected_day)?;
+                let new_date = start.with_day(expected_day)?;
                 match new_date.weekday() {
-                    Weekday::Sat if expected_day == 1 => date.with_day(3),
-                    Weekday::Sat => date.with_day(expected_day - 1),
+                    Weekday::Sat if expected_day == 1 => start.with_day(3),
+                    Weekday::Sat => start.with_day(expected_day - 1),
                     Weekday::Sun if expected_day == days_in_month => {
-                        date.with_day(days_in_month - 2)
+                        start.with_day(days_in_month - 2)
                     }
-                    Weekday::Sun => date.with_day(expected_day + 1),
+                    Weekday::Sun => start.with_day(expected_day + 1),
                     _ => Some(new_date),
                 }
             }
             _ => {
                 let map = self.dom.1 & DaysOfMonth::DAY_BITS;
-                let current_day = date.day0();
+                let current_day = start.day0();
                 let bottom_cleared = (map >> current_day) << current_day;
                 let trailing_zeros = bottom_cleared.trailing_zeros();
                 if trailing_zeros < days_in_month {
-                    date.with_day0(trailing_zeros)
+                    start.with_day0(trailing_zeros)
                 } else {
                     None
                 }
             }
         }
-        .filter(|&new_day| new_day >= date)
+        .filter(|&new_day| new_day >= start)
     }
 
     /// Gets the next matching (current inclusive) day of the week that matches the cron expression.
     /// The returned matching day is a value 0-30.
-    fn find_next_weekday(&self, date: Date<Utc>) -> Option<Date<Utc>> {
-        let days_in_month = days_in_month(date);
+    fn find_next_weekday(&self, start: Date<Utc>) -> Option<Date<Utc>> {
+        let days_in_month = days_in_month(start);
         match self.dow.kind() {
             DaysOfWeekKind::Last => {
                 let cron_weekday = self.dow.last().unwrap().num_days_from_sunday();
-                let current_weekday = date.weekday().num_days_from_sunday();
+                let current_weekday = start.weekday().num_days_from_sunday();
                 // calculate an offset that can be added to the current day to get what would be a day
                 // of a week where that day is the expected weekday for the cron
                 let weekday_offset = if cron_weekday < current_weekday {
@@ -1334,7 +1335,7 @@ impl Cron {
                 // current day of the week in the month. it doesn't matter if this calculation
                 // overflows the date out of the month (31st + 5 = 36th) since we're just looking
                 // for the first day.
-                let first_week_day = (date.day0() + weekday_offset) % 7;
+                let first_week_day = (start.day0() + weekday_offset) % 7;
                 // using that we can find the last day this weekday occurs in the month
                 let last_day = match (days_in_month, first_week_day) {
                     // special 5 week weekday handling
@@ -1347,52 +1348,52 @@ impl Cron {
                     (_, day) => day + (7 * 3),
                 };
 
-                date.with_day0(last_day)
+                start.with_day0(last_day)
             }
             DaysOfWeekKind::Nth => {
                 let (nth, day) = self.dow.nth().unwrap();
                 let cron_weekday = day.num_days_from_sunday();
-                let current_weekday = date.weekday().num_days_from_sunday();
+                let current_weekday = start.weekday().num_days_from_sunday();
                 let weekday_offset = if cron_weekday < current_weekday {
                     7 - (current_weekday - cron_weekday)
                 } else {
                     cron_weekday - current_weekday
                 };
-                let first_week_day = (date.day0() + weekday_offset) % 7;
+                let first_week_day = (start.day0() + weekday_offset) % 7;
                 let nth_day = first_week_day + (7 * (nth - 1) as u32);
-                date.with_day0(nth_day)
+                start.with_day0(nth_day)
             }
             DaysOfWeekKind::Pattern => {
-                let current_weekday = date.weekday().num_days_from_sunday();
+                let current_weekday = start.weekday().num_days_from_sunday();
                 let map = self.dow.1 & DaysOfWeek::DAY_BITS;
                 let bottom_cleared = (map >> current_weekday) << current_weekday;
                 let trailing_zeros = bottom_cleared.trailing_zeros();
                 let next_day = if trailing_zeros < DaysOfWeek::BITS as u32 {
                     // if there's another day in this week in the pattern, just add the number of
                     // days required to reach it
-                    date.day0() + (trailing_zeros - current_weekday)
+                    start.day0() + (trailing_zeros - current_weekday)
                 } else {
                     // otherwise, find the first matching day in the pattern and go to the next week
                     let next_week = map.trailing_zeros();
                     let remaining_days = (6 - current_weekday) + 1;
-                    date.day0() + remaining_days + next_week
+                    start.day0() + remaining_days + next_week
                 };
-                date.with_day0(next_day)
+                start.with_day0(next_day)
             }
-            _ => Some(date),
+            _ => Some(start),
         }
-        .filter(|&new_day| new_day >= date)
+        .filter(|&new_day| new_day >= start)
     }
 
     /// Gets the start of the next matching (current inclusive) month that matches the cron
     /// expression.
-    fn find_next_month(&self, date: Date<Utc>) -> Option<Date<Utc>> {
+    fn find_next_month(&self, start: Date<Utc>) -> Option<Date<Utc>> {
         let Months(map) = self.months;
-        let current_month = date.month0();
+        let current_month = start.month0();
         let bottom_cleared = (map >> current_month) << current_month;
         let trailing_zeros = bottom_cleared.trailing_zeros();
         if trailing_zeros < Months::BITS as u32 {
-            Utc.ymd_opt(date.year(), trailing_zeros + 1, 1).single()
+            Utc.ymd_opt(start.year(), trailing_zeros + 1, 1).single()
         } else {
             None
         }
@@ -1400,32 +1401,32 @@ impl Cron {
 
     fn find_next_date(
         &self,
-        mut date: Date<Utc>,
-        bound: Date<Utc>,
+        mut start: Date<Utc>,
+        end: Date<Utc>,
     ) -> Result<Option<Date<Utc>>, OutOfBound> {
-        if self.months.contains_month(date) {
-            match self.find_next_day(date) {
-                Some(next_day) if next_day > bound => return Err(OutOfBound),
+        if self.months.contains_month(start) {
+            match self.find_next_day(start) {
+                Some(next_day) if next_day > end => return Err(OutOfBound),
                 Some(next_day) => return Ok(Some(next_day)),
                 None => {}
             }
         }
 
         loop {
-            date = match next_month_in_year(date) {
-                Some(next_month) if next_month > bound => return Err(OutOfBound),
+            start = match next_month_in_year(start) {
+                Some(next_month) if next_month > end => return Err(OutOfBound),
                 Some(next_month) => next_month,
                 None => return Ok(None),
             };
 
-            date = match self.find_next_month(date) {
-                Some(date) if date > bound => return Err(OutOfBound),
-                Some(date) => date,
+            start = match self.find_next_month(start) {
+                Some(start) if start > end => return Err(OutOfBound),
+                Some(start) => start,
                 None => return Ok(None),
             };
 
-            match self.find_next_day(date) {
-                Some(next_day) if next_day > bound => return Err(OutOfBound),
+            match self.find_next_day(start) {
+                Some(next_day) if next_day > end => return Err(OutOfBound),
                 Some(next_day) => return Ok(Some(next_day)),
                 None => {}
             }
@@ -1465,9 +1466,9 @@ fn next_month_in_year(d: Date<Utc>) -> Option<Date<Utc>> {
 }
 
 #[inline]
-fn maybe_time_bound(d: Date<Utc>, bound: DateTime<Utc>) -> Option<NaiveTime> {
-    if d == bound.date() {
-        Some(bound.time())
+fn time_bound_for_date(d: Date<Utc>, end: DateTime<Utc>) -> Option<NaiveTime> {
+    if d == end.date() {
+        Some(end.time())
     } else {
         None
     }
@@ -1495,9 +1496,9 @@ impl Iterator for CronTimesIter {
     type Item = DateTime<Utc>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some((front, back)) = self.bounds {
-            if let Some(next) = self.cron.find_next(front, back) {
-                self.bounds = next_minute(next).map(|new_front| (new_front, back));
+        if let Some((start, end)) = self.bounds {
+            if let Some(next) = self.cron.find_next(start, end) {
+                self.bounds = next_minute(next).map(|new_start| (new_start, end));
                 return Some(next);
             }
 
@@ -1515,10 +1516,7 @@ mod tests {
     use super::*;
 
     #[cfg(not(feature = "std"))]
-    use alloc::vec::Vec;
-
-    #[cfg(not(feature = "std"))]
-    use alloc::string::ToString;
+    use alloc::{string::ToString, vec::Vec};
 
     const FORMAT: &str = "%F %R";
 
