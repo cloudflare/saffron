@@ -18,7 +18,7 @@ fn main() {
                     println!("Failed check! Cron does not contain {}.", time);
                     break;
                 }
-                println!("{}", time);
+                println!("{}", time.format("%F %R"));
             }
         }
         Ok(None) => println!("Usage: cargo run --example future-times -- \"[cron expression]\""),
