@@ -8,10 +8,12 @@ extern crate alloc;
 mod describe;
 pub mod parse;
 
-use chrono::prelude::*;
+use chrono::{prelude::*, Duration};
 
 use core::cmp;
 use core::fmt::Debug;
+use core::iter::FusedIterator;
+use core::ops::{Bound, RangeBounds};
 use core::str::FromStr;
 
 use self::parse::{CronExpr, ExprValue, OrsExpr};
@@ -999,7 +1001,8 @@ impl Cron {
         }
     }
 
-    /// Creates an iterator of date times that match with the cron value.
+    /// Creates an iterator of date times that match with the cron value. This is short
+    /// for `iter((Bound::Included(start), Bound::Unbounded))` or `iter(start..)`.
     ///
     /// # Example
     /// ```
@@ -1019,20 +1022,11 @@ impl Cron {
     /// ```
     #[inline]
     pub fn iter_from(self, start: DateTime<Utc>) -> CronTimesIter {
-        let start = start.trunc_subsecs(0).with_second(0).unwrap();
-        let current = if self.any() {
-            IterTime::Start(start)
-        } else {
-            IterTime::End
-        };
-
-        CronTimesIter {
-            cron: self,
-            current,
-        }
+        self.iter((Bound::Included(start), Bound::Unbounded))
     }
 
     /// Creates an iterator of date times that match with the cron value after the given date.
+    /// This is short for `iter((Bound::Excluded(start), Bound::Unbounded))`.
     ///
     /// # Example
     /// ```
@@ -1052,16 +1046,53 @@ impl Cron {
     /// ```
     #[inline]
     pub fn iter_after(self, start: DateTime<Utc>) -> CronTimesIter {
-        let start = start.trunc_subsecs(0).with_second(0).unwrap();
-        let current = if self.any() {
-            IterTime::Next(start)
-        } else {
-            IterTime::End
-        };
+        self.iter((Bound::Excluded(start), Bound::Unbounded))
+    }
+
+    /// Creates an iterator of date times contained in the cron value using the given start
+    /// and end range bounds. Unbounded start and end values will use the max and min representable
+    /// values for DateTime<Utc> respectively. If the start bound is greater than the end bound,
+    /// the iterator does not yield any elements.
+    ///
+    /// # Example
+    /// ```
+    /// use saffron::Cron;
+    /// use chrono::prelude::*;
+    ///
+    /// let cron = "*/10 * * * *".parse::<Cron>().expect("Couldn't parse expression!");
+    /// let start = Utc.ymd(1970, 1, 1).and_hms(0, 0, 0);
+    ///
+    /// // effectively the same as iter_from
+    /// let _ = cron.clone().iter(start..);
+    ///
+    /// // all matching times in the next 30 minutes
+    /// let _ = cron.clone().iter(start..(start + chrono::Duration::seconds(60 * 30)));
+    /// ```
+    pub fn iter<R: RangeBounds<DateTime<Utc>>>(self, bounds: R) -> CronTimesIter {
+        if !self.any() {
+            return CronTimesIter {
+                cron: self,
+                bounds: None,
+            };
+        }
+
+        let front = match bounds.start_bound() {
+            Bound::Unbounded => Some(chrono::MIN_DATETIME),
+            Bound::Included(start) => Some(*start),
+            Bound::Excluded(start) => next_minute(*start),
+        }
+        .map(minute_floor);
+
+        let back = match bounds.end_bound() {
+            Bound::Unbounded => Some(chrono::MAX_DATETIME),
+            Bound::Included(end) => Some(*end),
+            Bound::Excluded(end) => previous_minute(*end),
+        }
+        .map(minute_floor);
 
         CronTimesIter {
             cron: self,
-            current,
+            bounds: front.zip(back).filter(|(start, end)| front <= back),
         }
     }
 
@@ -1078,16 +1109,12 @@ impl Cron {
     /// assert_eq!(cron.next_from(date), Some(date));
     /// ```
     #[inline]
-    pub fn next_from(&self, date: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        let date = date.trunc_subsecs(0).with_second(0).unwrap();
-        if !self.any() {
-            return None;
-        }
-
-        if self.contains(date) {
-            Some(date)
+    pub fn next_from(&self, start: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        let start = minute_floor(start);
+        if self.any() {
+            self.find_next(start, chrono::MAX_DATETIME)
         } else {
-            self.find_next(date)
+            None
         }
     }
 
@@ -1103,97 +1130,114 @@ impl Cron {
     /// assert_eq!(cron.next_after(date), date.with_minute(10));
     /// ```
     #[inline]
-    pub fn next_after(&self, date: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        let date = date.trunc_subsecs(0).with_second(0).unwrap();
+    pub fn next_after(&self, start: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        let start = next_minute(minute_floor(start))?;
         if self.any() {
-            self.find_next(date)
+            self.find_next(start, chrono::MAX_DATETIME)
         } else {
             None
         }
     }
 
-    const MUST_CONTAIN_MINUTE: &'static str = "Expression must contain at least one minute";
-
-    fn next_minute(time: NaiveTime) -> Option<NaiveTime> {
-        if time.minute() < 59 {
-            Some(NaiveTime::from_hms(time.hour(), time.minute() + 1, 0))
-        } else if time.hour() < 23 {
-            Some(NaiveTime::from_hms(time.hour() + 1, 0, 0))
-        } else {
-            None
-        }
-    }
-
-    fn find_next(&self, dt: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        if self.contains_date(dt.date()) {
-            if let Some(next_minute) = Self::next_minute(dt.time()) {
-                if let Some(time) = self.find_next_time(next_minute) {
-                    return dt.date().and_time(time);
-                }
+    /// Finds the next (current inclusive) matching date time in the future within the specified
+    /// date time bound, or none if the search exceeds the bound.
+    fn find_next(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        if self.contains_date(start.date()) {
+            match self.find_next_time(start.time(), time_bound_for_date(start.date(), end)) {
+                Ok(Some(next_time)) => return start.date().and_time(next_time),
+                Err(OutOfBound) => return None,
+                Ok(None) => {}
             }
         }
 
-        let tomorrow = dt.date().succ_opt()?;
-        let time = NaiveTime::from_hms(0, 0, 0);
-
-        if let Some(next_date) = self.find_next_date(tomorrow) {
-            let time = self.find_next_time(time).expect(Self::MUST_CONTAIN_MINUTE);
-
-            return next_date.and_time(time);
-        }
-
-        let mut year = tomorrow.year().checked_add(1)?;
+        let midnight = NaiveTime::from_hms(0, 0, 0);
+        let mut search_date = start.date().succ_opt().filter(|&t| t <= end.date())?;
         loop {
-            let next_year = Utc.ymd_opt(year, 1, 1).single()?;
-            if let Some(next_date) = self.find_next_date(next_year) {
-                let time = self.find_next_time(time).expect(Self::MUST_CONTAIN_MINUTE);
-
-                return next_date.and_time(time);
-            } else {
-                year = year.checked_add(1)?;
+            match self.find_next_date(search_date, end.date()) {
+                Ok(Some(next_date)) => {
+                    return match self.find_next_time(midnight, time_bound_for_date(next_date, end))
+                    {
+                        Ok(Some(next_time)) => next_date.and_time(next_time),
+                        _ => None,
+                    }
+                }
+                Err(OutOfBound) => return None,
+                Ok(None) => {
+                    search_date = Utc
+                        .ymd_opt(search_date.year() + 1, 1, 1)
+                        .single()
+                        .filter(|&date| date <= end.date())?;
+                }
             }
         }
     }
 
     /// Gets the next minute (current inclusive) matching the cron expression, or none if the current
-    /// minute / no upcoming minute in the hour matches. The current minute is a value 0-59.
-    fn find_next_minute(&self, current_minute: u32) -> Option<u32> {
+    /// minute / no upcoming minute in the hour matches.
+    fn find_next_minute(&self, start: NaiveTime) -> Option<NaiveTime> {
         let Minutes(map) = self.minutes;
+        let current_minute = start.minute();
         // clear the minutes we're already past
         let bottom_cleared = (map >> current_minute) << current_minute;
-        // count trailing zeroes to find the first set. if none is set, we get back the number of
+        // count trailing zeros to find the first set. if none is set, we get back the number of
         // bits in the integer
-        let trailing_zeroes = bottom_cleared.trailing_zeros();
-        if trailing_zeroes < Minutes::BITS as u32 {
-            Some(trailing_zeroes)
+        let trailing_zeros = bottom_cleared.trailing_zeros();
+        if trailing_zeros < Minutes::BITS as u32 {
+            start.with_minute(trailing_zeros)
         } else {
             None
         }
     }
 
-    /// Gets the next matching (current inclusive) hour in the cron expression. The returned matching
-    /// hour is a value 0-23.
-    fn find_next_hour(&self, current_hour: u32) -> Option<u32> {
+    /// Gets the next hour (current inclusive) in the cron expression, or none if the current hour /
+    /// no upcoming hour in the day matches.
+    fn find_next_hour(&self, start: NaiveTime) -> Option<NaiveTime> {
         let Hours(map) = self.hours;
+        let current_hour = start.hour();
         let bottom_cleared = (map >> current_hour) << current_hour;
-        let trailing_zeroes = bottom_cleared.trailing_zeros();
-        if trailing_zeroes < Hours::BITS as u32 {
-            Some(trailing_zeroes)
+        let trailing_zeros = bottom_cleared.trailing_zeros();
+        if trailing_zeros < Hours::BITS as u32 {
+            NaiveTime::from_hms_opt(trailing_zeros, 0, 0)
         } else {
             None
+        }
+    }
+
+    /// Finds the next matching time, limited inclusive by a optional bound.
+    fn find_next_time(
+        &self,
+        start: NaiveTime,
+        end: Option<NaiveTime>,
+    ) -> Result<Option<NaiveTime>, OutOfBound> {
+        if self.hours.contains_hour(start) {
+            match (self.find_next_minute(start), end) {
+                (Some(next_minute), Some(end)) if next_minute > end => return Err(OutOfBound),
+                (Some(next_minute), _) => return Ok(Some(next_minute)),
+                (None, _) => {}
+            }
+        }
+
+        let next_minute = NaiveTime::from_hms_opt(start.hour() + 1, 0, 0)
+            .and_then(|time| self.find_next_hour(time))
+            .and_then(|time| self.find_next_minute(time));
+
+        match (next_minute, end) {
+            (Some(next_minute), Some(end)) if next_minute > end => Err(OutOfBound),
+            (Some(next_minute), _) => Ok(Some(next_minute)),
+            (None, _) => Ok(None),
         }
     }
 
     /// Gets the next matching (current inclusive) day of the month or day of the week that
     /// matches the cron expression. The returned matching day is a value 0-30.
-    fn find_next_day(&self, date: Date<Utc>) -> Option<u32> {
+    fn find_next_day(&self, start: Date<Utc>) -> Option<Date<Utc>> {
         match (self.dom.is_star(), self.dow.is_star()) {
-            (true, true) => Some(date.day0()),
-            (true, false) => self.find_next_weekday(date),
-            (false, true) => self.find_next_day_of_month(date),
+            (true, true) => Some(start),
+            (true, false) => self.find_next_weekday(start),
+            (false, true) => self.find_next_day_of_month(start),
             (false, false) => {
-                let next_weekday = self.find_next_weekday(date);
-                let next_day = self.find_next_day_of_month(date);
+                let next_weekday = self.find_next_weekday(start);
+                let next_day = self.find_next_day_of_month(start);
                 match (next_day, next_weekday) {
                     (Some(day), Some(weekday)) => Some(cmp::min(day, weekday)),
                     (Some(day), None) => Some(day),
@@ -1205,111 +1249,73 @@ impl Cron {
     }
 
     /// Gets the next matching (current inclusive) day of the month that matches the cron expression.
-    /// The returned matching day is a value 0-30.
-    fn find_next_day_of_month(&self, date: Date<Utc>) -> Option<u32> {
-        let days_in_month = days_in_month(date);
+    fn find_next_day_of_month(&self, start: Date<Utc>) -> Option<Date<Utc>> {
+        let days_in_month = days_in_month(start);
         match self.dom.kind() {
             DaysOfMonthKind::Last => match self.dom.one_value() {
                 // 'L'
-                0 => Some(days_in_month - 1),
+                0 => start.with_day(days_in_month),
                 // 'L-3'
-                offset => {
-                    let expected = (days_in_month - 1).checked_sub(offset as u32)?;
-                    if expected < date.day0() {
-                        None
-                    } else {
-                        Some(expected)
-                    }
-                }
+                offset => start.with_day(days_in_month.checked_sub(offset as u32)?),
             },
             DaysOfMonthKind::LastWeekday => match self.dom.one_value() {
                 // 'LW'
                 0 => {
-                    let days_in_month = days_in_month - 1;
-                    let real_day = match Self::weekday_for_day(days_in_month, date) {
-                        Weekday::Sat => days_in_month - 1,
-                        Weekday::Sun => days_in_month - 2,
-                        _ => days_in_month,
-                    };
-                    if real_day < date.day0() {
-                        None
-                    } else {
-                        Some(real_day)
+                    let next_date = start.with_day(days_in_month)?;
+                    match next_date.weekday() {
+                        Weekday::Sat => start.with_day(days_in_month - 1),
+                        Weekday::Sun => start.with_day(days_in_month - 2),
+                        _ => Some(next_date),
                     }
                 }
                 // 'L-3W'
                 offset => {
-                    let days_in_month = days_in_month - 1;
-                    let last_in_month =
-                        days_in_month.checked_sub(offset as u32).map(|new_day| {
-                            match Self::weekday_for_day(new_day, date) {
-                                Weekday::Sat => {
-                                    if new_day == 0 {
-                                        2
-                                    } else {
-                                        new_day - 1
-                                    }
-                                }
-                                Weekday::Sun => new_day + 1,
-                                _ => new_day,
-                            }
-                        })?;
-                    if last_in_month < date.day0() {
-                        None
-                    } else {
-                        Some(last_in_month)
+                    let expected_day = days_in_month.checked_sub(offset as u32)?;
+                    let next_date = start.with_day(expected_day)?;
+                    match next_date.weekday() {
+                        Weekday::Sat if expected_day == 1 => start.with_day(3),
+                        Weekday::Sat => start.with_day(expected_day - 1),
+                        Weekday::Sun => start.with_day(expected_day + 1),
+                        _ => Some(next_date),
                     }
                 }
             },
             DaysOfMonthKind::Weekday => {
-                let days_in_month = days_in_month - 1;
-                let expected_day = (self.dom.one_value() - 1) as u32;
-                let real_day = match Self::weekday_for_day(expected_day, date) {
-                    Weekday::Sat => {
-                        if expected_day == 0 {
-                            2
-                        } else {
-                            expected_day - 1
-                        }
+                let expected_day = self.dom.one_value() as u32;
+                let new_date = start.with_day(expected_day)?;
+                match new_date.weekday() {
+                    Weekday::Sat if expected_day == 1 => start.with_day(3),
+                    Weekday::Sat => start.with_day(expected_day - 1),
+                    Weekday::Sun if expected_day == days_in_month => {
+                        start.with_day(days_in_month - 2)
                     }
-                    Weekday::Sun => {
-                        if expected_day == days_in_month {
-                            days_in_month - 2
-                        } else {
-                            expected_day + 1
-                        }
-                    }
-                    _ => expected_day,
-                };
-
-                if real_day >= date.day0() && real_day <= days_in_month {
-                    Some(real_day)
-                } else {
-                    None
+                    Weekday::Sun => start.with_day(expected_day + 1),
+                    _ => Some(new_date),
                 }
             }
             _ => {
-                let current_day = date.day0();
                 let map = self.dom.1 & DaysOfMonth::DAY_BITS;
+                let current_day = start.day0();
                 let bottom_cleared = (map >> current_day) << current_day;
-                let trailing_zeroes = bottom_cleared.trailing_zeros();
-                if trailing_zeroes < days_in_month {
-                    Some(trailing_zeroes)
+                let trailing_zeros = bottom_cleared.trailing_zeros();
+                if trailing_zeros < days_in_month {
+                    start.with_day0(trailing_zeros)
                 } else {
                     None
                 }
             }
         }
+        .filter(|&new_day| new_day >= start)
     }
 
     /// Gets the next matching (current inclusive) day of the week that matches the cron expression.
     /// The returned matching day is a value 0-30.
-    fn find_next_weekday(&self, date: Date<Utc>) -> Option<u32> {
-        let days_in_month = days_in_month(date);
+    fn find_next_weekday(&self, start: Date<Utc>) -> Option<Date<Utc>> {
+        let days_in_month = days_in_month(start);
         match self.dow.kind() {
             DaysOfWeekKind::Last => {
                 let cron_weekday = self.dow.last().unwrap().num_days_from_sunday();
-                let current_weekday = date.weekday().num_days_from_sunday();
+                let current_weekday = start.weekday().num_days_from_sunday();
                 // calculate an offset that can be added to the current day to get what would be a day
                 // of a week where that day is the expected weekday for the cron
                 let weekday_offset = if cron_weekday < current_weekday {
@@ -1329,7 +1335,7 @@ impl Cron {
                 // current day of the week in the month. it doesn't matter if this calculation
                 // overflows the date out of the month (31st + 5 = 36th) since we're just looking
                 // for the first day.
-                let first_week_day = (date.day0() + weekday_offset) % 7;
+                let first_week_day = (start.day0() + weekday_offset) % 7;
                 // using that we can find the last day this weekday occurs in the month
                 let last_day = match (days_in_month, first_week_day) {
                     // special 5 week weekday handling
@@ -1342,211 +1348,141 @@ impl Cron {
                     (_, day) => day + (7 * 3),
                 };
 
-                if date.day0() <= last_day {
-                    Some(last_day)
-                } else {
-                    None
-                }
+                start.with_day0(last_day)
             }
             DaysOfWeekKind::Nth => {
                 let (nth, day) = self.dow.nth().unwrap();
                 let cron_weekday = day.num_days_from_sunday();
-                let current_weekday = date.weekday().num_days_from_sunday();
+                let current_weekday = start.weekday().num_days_from_sunday();
                 let weekday_offset = if cron_weekday < current_weekday {
                     7 - (current_weekday - cron_weekday)
                 } else {
                     cron_weekday - current_weekday
                 };
-                let first_week_day = (date.day0() + weekday_offset) % 7;
+                let first_week_day = (start.day0() + weekday_offset) % 7;
                 let nth_day = first_week_day + (7 * (nth - 1) as u32);
-                if nth_day < days_in_month && nth_day >= date.day0() {
-                    Some(nth_day)
-                } else {
-                    None
-                }
+                start.with_day0(nth_day)
             }
             DaysOfWeekKind::Pattern => {
-                let current_weekday = date.weekday().num_days_from_sunday();
+                let current_weekday = start.weekday().num_days_from_sunday();
                 let map = self.dow.1 & DaysOfWeek::DAY_BITS;
                 let bottom_cleared = (map >> current_weekday) << current_weekday;
-                let trailing_zeroes = bottom_cleared.trailing_zeros();
-                let next_day = if trailing_zeroes < DaysOfWeek::BITS as u32 {
-                    date.day0() + (trailing_zeroes - current_weekday)
+                let trailing_zeros = bottom_cleared.trailing_zeros();
+                let next_day = if trailing_zeros < DaysOfWeek::BITS as u32 {
+                    // if there's another day in this week in the pattern, just add the number of
+                    // days required to reach it
+                    start.day0() + (trailing_zeros - current_weekday)
                 } else {
+                    // otherwise, find the first matching day in the pattern and go to the next week
                     let next_week = map.trailing_zeros();
                     let remaining_days = (6 - current_weekday) + 1;
-                    date.day0() + remaining_days + next_week
+                    start.day0() + remaining_days + next_week
                 };
-                if next_day < days_in_month {
-                    Some(next_day)
-                } else {
-                    None
-                }
+                start.with_day0(next_day)
             }
-            _ => Some(date.day0()),
+            _ => Some(start),
         }
+        .filter(|&new_day| new_day >= start)
     }
 
-    /// Gets the weekday for a given day of the month using the current date for the month
-    fn weekday_for_day(day: u32, date: Date<Utc>) -> Weekday {
-        let expected_first_day = (day % 7) as usize;
-        let first_day_of_current_weekday = (date.day0() % 7) as usize;
-        let current_weekday = date.weekday().num_days_from_sunday() as usize;
-
-        // I'm bad at math, so here's all the answers instead
-        use Weekday::*;
-        const TABLE: [[[Weekday; 7]; 7]; 7] = [
-            [
-                [Sun, Mon, Tue, Wed, Thu, Fri, Sat],
-                [Mon, Tue, Wed, Thu, Fri, Sat, Sun],
-                [Tue, Wed, Thu, Fri, Sat, Sun, Mon],
-                [Wed, Thu, Fri, Sat, Sun, Mon, Tue],
-                [Thu, Fri, Sat, Sun, Mon, Tue, Wed],
-                [Fri, Sat, Sun, Mon, Tue, Wed, Thu],
-                [Sat, Sun, Mon, Tue, Wed, Thu, Fri],
-            ],
-            [
-                [Sat, Sun, Mon, Tue, Wed, Thu, Fri],
-                [Sun, Mon, Tue, Wed, Thu, Fri, Sat],
-                [Mon, Tue, Wed, Thu, Fri, Sat, Sun],
-                [Tue, Wed, Thu, Fri, Sat, Sun, Mon],
-                [Wed, Thu, Fri, Sat, Sun, Mon, Tue],
-                [Thu, Fri, Sat, Sun, Mon, Tue, Wed],
-                [Fri, Sat, Sun, Mon, Tue, Wed, Thu],
-            ],
-            [
-                [Fri, Sat, Sun, Mon, Tue, Wed, Thu],
-                [Sat, Sun, Mon, Tue, Wed, Thu, Fri],
-                [Sun, Mon, Tue, Wed, Thu, Fri, Sat],
-                [Mon, Tue, Wed, Thu, Fri, Sat, Sun],
-                [Tue, Wed, Thu, Fri, Sat, Sun, Mon],
-                [Wed, Thu, Fri, Sat, Sun, Mon, Tue],
-                [Thu, Fri, Sat, Sun, Mon, Tue, Wed],
-            ],
-            [
-                [Thu, Fri, Sat, Sun, Mon, Tue, Wed],
-                [Fri, Sat, Sun, Mon, Tue, Wed, Thu],
-                [Sat, Sun, Mon, Tue, Wed, Thu, Fri],
-                [Sun, Mon, Tue, Wed, Thu, Fri, Sat],
-                [Mon, Tue, Wed, Thu, Fri, Sat, Sun],
-                [Tue, Wed, Thu, Fri, Sat, Sun, Mon],
-                [Wed, Thu, Fri, Sat, Sun, Mon, Tue],
-            ],
-            [
-                [Wed, Thu, Fri, Sat, Sun, Mon, Tue],
-                [Thu, Fri, Sat, Sun, Mon, Tue, Wed],
-                [Fri, Sat, Sun, Mon, Tue, Wed, Thu],
-                [Sat, Sun, Mon, Tue, Wed, Thu, Fri],
-                [Sun, Mon, Tue, Wed, Thu, Fri, Sat],
-                [Mon, Tue, Wed, Thu, Fri, Sat, Sun],
-                [Tue, Wed, Thu, Fri, Sat, Sun, Mon],
-            ],
-            [
-                [Tue, Wed, Thu, Fri, Sat, Sun, Mon],
-                [Wed, Thu, Fri, Sat, Sun, Mon, Tue],
-                [Thu, Fri, Sat, Sun, Mon, Tue, Wed],
-                [Fri, Sat, Sun, Mon, Tue, Wed, Thu],
-                [Sat, Sun, Mon, Tue, Wed, Thu, Fri],
-                [Sun, Mon, Tue, Wed, Thu, Fri, Sat],
-                [Mon, Tue, Wed, Thu, Fri, Sat, Sun],
-            ],
-            [
-                [Mon, Tue, Wed, Thu, Fri, Sat, Sun],
-                [Tue, Wed, Thu, Fri, Sat, Sun, Mon],
-                [Wed, Thu, Fri, Sat, Sun, Mon, Tue],
-                [Thu, Fri, Sat, Sun, Mon, Tue, Wed],
-                [Fri, Sat, Sun, Mon, Tue, Wed, Thu],
-                [Sat, Sun, Mon, Tue, Wed, Thu, Fri],
-                [Sun, Mon, Tue, Wed, Thu, Fri, Sat],
-            ],
-        ];
-
-        TABLE[first_day_of_current_weekday][expected_first_day][current_weekday]
-    }
-
-    /// Gets the next matching (current inclusive) month that matches the cron expression.
-    /// The returned matching month is a value 0-11.
-    fn find_next_month(&self, current_month: u32) -> Option<u32> {
+    /// Gets the start of the next matching (current inclusive) month that matches the cron
+    /// expression.
+    fn find_next_month(&self, start: Date<Utc>) -> Option<Date<Utc>> {
         let Months(map) = self.months;
+        let current_month = start.month0();
         let bottom_cleared = (map >> current_month) << current_month;
-        let trailing_zeroes = bottom_cleared.trailing_zeros();
-        if trailing_zeroes < Months::BITS as u32 {
-            Some(trailing_zeroes)
+        let trailing_zeros = bottom_cleared.trailing_zeros();
+        if trailing_zeros < Months::BITS as u32 {
+            Utc.ymd_opt(start.year(), trailing_zeros + 1, 1).single()
         } else {
             None
         }
     }
 
-    fn find_next_time(&self, time: NaiveTime) -> Option<NaiveTime> {
-        let hour = time.hour();
-        if self.hours.contains_hour(time) {
-            if let Some(next_minute) = self.find_next_minute(time.minute()) {
-                return Some(NaiveTime::from_hms(hour, next_minute, 0));
+    fn find_next_date(
+        &self,
+        mut start: Date<Utc>,
+        end: Date<Utc>,
+    ) -> Result<Option<Date<Utc>>, OutOfBound> {
+        if self.months.contains_month(start) {
+            match self.find_next_day(start) {
+                Some(next_day) if next_day > end => return Err(OutOfBound),
+                Some(next_day) => return Ok(Some(next_day)),
+                None => {}
             }
         }
 
-        if hour < 23 {
-            if let Some(next_hour) = self.find_next_hour(hour + 1) {
-                let minute = self.find_next_minute(0).expect(Self::MUST_CONTAIN_MINUTE);
+        loop {
+            start = match next_month_in_year(start) {
+                Some(next_month) if next_month > end => return Err(OutOfBound),
+                Some(next_month) => next_month,
+                None => return Ok(None),
+            };
 
-                return Some(NaiveTime::from_hms(next_hour, minute, 0));
+            start = match self.find_next_month(start) {
+                Some(start) if start > end => return Err(OutOfBound),
+                Some(start) => start,
+                None => return Ok(None),
+            };
+
+            match self.find_next_day(start) {
+                Some(next_day) if next_day > end => return Err(OutOfBound),
+                Some(next_day) => return Ok(Some(next_day)),
+                None => {}
             }
         }
-
-        None
     }
+}
 
-    fn find_next_date(&self, date: Date<Utc>) -> Option<Date<Utc>> {
-        const VALID_NEXT_DAY: &str = "Day should be valid for giving month";
-        const VALID_NEXT_MONTH: &str = "Month should be valid";
+struct OutOfBound;
 
-        let mut month = date.month();
-        if self.months.contains_month(date) {
-            if let Some(next_day) = self.find_next_day(date) {
-                return Some(date.with_day0(next_day).expect(VALID_NEXT_DAY));
-            }
-        }
+#[inline]
+fn minute_floor(dt: DateTime<Utc>) -> DateTime<Utc> {
+    dt.with_second(0)
+        .expect("zero is a valid second value")
+        .with_nanosecond(0)
+        .expect("zero is a valid nanosecond value")
+}
 
-        while month <= 11 {
-            if let Some(next_month) = self.find_next_month(month) {
-                month = next_month;
+#[inline]
+fn previous_minute(dt: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    dt.checked_sub_signed(Duration::minutes(1))
+}
 
-                let start_month_date = date
-                    .with_day(1)
-                    .expect(VALID_NEXT_DAY)
-                    .with_month0(month)
-                    .expect(VALID_NEXT_MONTH);
-                if let Some(month_day) = self.find_next_day(start_month_date) {
-                    return Some(start_month_date.with_day0(month_day).expect(VALID_NEXT_DAY));
-                } else {
-                    month += 1;
-                }
-            } else {
-                break;
-            }
-        }
+#[inline]
+fn next_minute(dt: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    dt.checked_add_signed(Duration::minutes(1))
+}
 
+/// Gets the next month in the year if one exists.
+#[inline]
+fn next_month_in_year(d: Date<Utc>) -> Option<Date<Utc>> {
+    let month = d.month();
+    if month <= 11 {
+        Utc.ymd_opt(d.year(), month + 1, 1).single()
+    } else {
         None
     }
 }
 
-enum IterTime {
-    /// Return the current time if it matches, otherwise change to `Next` and get the next time
-    Start(DateTime<Utc>),
-    /// Return the next time that matches the cron expression after this one
-    Next(DateTime<Utc>),
-    /// The end of the iterator
-    End,
+#[inline]
+fn time_bound_for_date(d: Date<Utc>, end: DateTime<Utc>) -> Option<NaiveTime> {
+    if d == end.date() {
+        Some(end.time())
+    } else {
+        None
+    }
 }
 
 /// An iterator over the times matching the contained cron value.
-/// Created with [`Cron::iter_from`] and [`Cron::iter_after`].
+/// Created with [`Cron::iter`], [`Cron::iter_from`], and [`Cron::iter_after`].
 ///
+/// [`Cron::iter`]: struct.Cron.html#method.iter
 /// [`Cron::iter_from`]: struct.Cron.html#method.iter_from
 /// [`Cron::iter_after`]: struct.Cron.html#method.iter_after
 pub struct CronTimesIter {
     cron: Cron,
-    current: IterTime,
+    bounds: Option<(DateTime<Utc>, DateTime<Utc>)>,
 }
 
 impl CronTimesIter {
@@ -1560,43 +1496,37 @@ impl Iterator for CronTimesIter {
     type Item = DateTime<Utc>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.current {
-            IterTime::Start(time) => {
-                self.current = IterTime::Next(time);
-                if self.cron.contains(time) {
-                    Some(time)
-                } else {
-                    self.next() // call back in and get the next item
-                }
+        if let Some((start, end)) = self.bounds {
+            if let Some(next) = self.cron.find_next(start, end) {
+                self.bounds = next_minute(next).map(|new_start| (new_start, end));
+                return Some(next);
             }
-            IterTime::Next(time) => match self.cron.find_next(time) {
-                Some(date) => {
-                    self.current = IterTime::Next(date);
-                    Some(date)
-                }
-                None => {
-                    self.current = IterTime::End;
-                    None
-                }
-            },
-            IterTime::End => None,
+
+            self.bounds = None;
         }
+
+        None
     }
 }
 
-impl core::iter::FusedIterator for CronTimesIter {}
+impl FusedIterator for CronTimesIter {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(not(feature = "std"))]
+    use alloc::{string::ToString, vec::Vec};
+
+    const FORMAT: &str = "%F %R";
+
     fn check_does_contain(cron: &str, dates: impl IntoIterator<Item = impl AsRef<str>>) {
         let parsed: Cron = cron.parse().unwrap();
 
-        for date in dates
-            .into_iter()
-            .map(|s| s.as_ref().parse::<DateTime<Utc>>().unwrap())
-        {
+        for date in dates.into_iter().map(|s| {
+            Utc.datetime_from_str(s.as_ref(), FORMAT)
+                .expect("Failed to parse expected date")
+        }) {
             assert!(
                 parsed.contains(date),
                 "Cron \"{}\" should contain {}. Compiled: {:#?}",
@@ -1610,10 +1540,10 @@ mod tests {
     fn check_does_not_contain(cron: &str, dates: impl IntoIterator<Item = impl AsRef<str>>) {
         let parsed: Cron = cron.parse().unwrap();
 
-        for date in dates
-            .into_iter()
-            .map(|s| s.as_ref().parse::<DateTime<Utc>>().unwrap())
-        {
+        for date in dates.into_iter().map(|s| {
+            Utc.datetime_from_str(s.as_ref(), FORMAT)
+                .expect("Failed to parse expected date")
+        }) {
             assert!(
                 !parsed.contains(date),
                 "Cron \"{}\" shouldn't contain {}. Compiled {:#?}",
@@ -1629,10 +1559,10 @@ mod tests {
         check_does_contain(
             "* * * * *",
             &[
-                "1970-01-1T00:00:00+00:00",
-                "2016-11-08T23:53:57+00:00",
-                "2020-07-04T15:42:30+00:00",
-                "2072-02-29T01:15:23+00:00",
+                "1970-01-01 00:00",
+                "2016-11-08 23:53",
+                "2020-07-04 15:42",
+                "2072-02-29 01:15",
             ],
         );
     }
@@ -1643,17 +1573,22 @@ mod tests {
 
         check_does_contain(
             cron,
-            &["2020-08-23T00:05:00+00:00", "2020-08-23T00:05:30+00:00"],
+            &[
+                "2020-08-23 00:05",
+                "2021-08-23 00:05",
+                "2022-08-23 00:05",
+                "2023-08-23 00:05",
+            ],
         );
 
         check_does_not_contain(
             cron,
             &[
-                "1970-01-1T00:00:00+00:00",
-                "2016-11-08T23:53:57+00:00",
-                "2020-07-04T15:42:30+00:00",
-                "2072-02-29T01:15:23+00:00",
-                "2020-08-23T11:05:00+00:00",
+                "1970-01-01 00:00",
+                "2016-11-08 23:53",
+                "2020-07-04 15:42",
+                "2072-02-29 01:15",
+                "2020-08-23 11:05",
             ],
         );
     }
@@ -1665,17 +1600,22 @@ mod tests {
 
         check_does_contain(
             cron,
-            &["2020-08-23T00:05:00+00:00", "2020-08-23T00:05:30+00:00"],
+            &[
+                "2020-08-23 00:05",
+                "2021-08-23 00:05",
+                "2022-08-23 00:05",
+                "2023-08-23 00:05",
+            ],
         );
 
         check_does_not_contain(
             cron,
             &[
-                "1970-01-01T00:00:00+00:00",
-                "2016-11-08T23:53:57+00:00",
-                "2020-07-04T15:42:30+00:00",
-                "2072-02-29T01:15:23+00:00",
-                "2020-08-23T11:05:00+00:00",
+                "1970-01-01 00:00",
+                "2016-11-08 23:53",
+                "2020-07-04 15:42",
+                "2072-02-29 01:15",
+                "2020-08-23 11:05",
             ],
         );
     }
@@ -1689,22 +1629,22 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2020-01-31T00:59:00+00:00",
-                "2020-01-31T00:00:00+00:00",
-                "2020-01-31T23:59:00+00:00",
-                "2020-01-31T23:00:00+00:00",
-                "2020-01-01T00:59:00+00:00",
-                "2020-01-01T00:00:00+00:00",
-                "2020-01-01T23:59:00+00:00",
-                "2020-01-01T23:00:00+00:00",
-                "2020-12-31T00:59:00+00:00",
-                "2020-12-31T00:00:00+00:00",
-                "2020-12-31T23:59:00+00:00",
-                "2020-12-31T23:00:00+00:00",
-                "2020-12-01T00:59:00+00:00",
-                "2020-12-01T00:00:00+00:00",
-                "2020-12-01T23:59:00+00:00",
-                "2020-12-01T23:00:00+00:00",
+                "2020-01-31 00:59",
+                "2020-01-31 00:00",
+                "2020-01-31 23:59",
+                "2020-01-31 23:00",
+                "2020-01-01 00:59",
+                "2020-01-01 00:00",
+                "2020-01-01 23:59",
+                "2020-01-01 23:00",
+                "2020-12-31 00:59",
+                "2020-12-31 00:00",
+                "2020-12-31 23:59",
+                "2020-12-31 23:00",
+                "2020-12-01 00:59",
+                "2020-12-01 00:00",
+                "2020-12-01 23:59",
+                "2020-12-01 23:00",
             ],
         );
 
@@ -1714,10 +1654,10 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2020-01-04T00:00:00+00:00",
-                "2020-01-05T00:00:00+00:00",
-                "2020-01-11T00:00:00+00:00",
-                "2020-01-12T00:00:00+00:00",
+                "2020-01-04 00:00",
+                "2020-01-05 00:00",
+                "2020-01-11 00:00",
+                "2020-01-12 00:00",
             ],
         );
     }
@@ -1729,11 +1669,11 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2020-01-01T00:00:00+00:00",
-                "2020-01-01T00:59:00+00:00",
-                "2020-01-01T23:59:00+00:00",
-                "2020-01-31T23:59:00+00:00",
-                "2020-12-31T23:59:00+00:00",
+                "2020-01-01 00:00",
+                "2020-01-01 00:59",
+                "2020-01-01 23:59",
+                "2020-01-31 23:59",
+                "2020-12-31 23:59",
             ],
         );
     }
@@ -1745,10 +1685,10 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "1970-01-1T00:00:00+00:00",
-                "2016-11-08T23:53:57+00:00",
-                "2020-07-04T15:42:30+00:00",
-                "2072-02-29T01:15:23+00:00",
+                "1970-01-01 00:00",
+                "2016-11-08 23:53",
+                "2020-07-04 15:42",
+                "2072-02-29 01:15",
             ],
         );
 
@@ -1757,10 +1697,10 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "1970-01-1T00:00:00+00:00",
-                "2016-11-08T23:53:57+00:00",
-                "2020-07-04T15:42:30+00:00",
-                "2072-02-29T01:15:23+00:00",
+                "1970-01-01 00:00",
+                "2016-11-08 23:53",
+                "2020-07-04 15:42",
+                "2072-02-29 01:15",
             ],
         );
     }
@@ -1772,14 +1712,14 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2400-02-29T00:00:00+00:00",
-                "2300-02-28T00:00:00+00:00",
-                "2200-02-28T00:00:00+00:00",
-                "2100-02-28T00:00:00+00:00",
-                "2024-02-29T00:00:00+00:00",
-                "2020-02-29T00:00:00+00:00",
-                "2004-02-29T00:00:00+00:00",
-                "2000-02-29T00:00:00+00:00",
+                "2400-02-29 00:00",
+                "2300-02-28 00:00",
+                "2200-02-28 00:00",
+                "2100-02-28 00:00",
+                "2024-02-29 00:00",
+                "2020-02-29 00:00",
+                "2004-02-29 00:00",
+                "2000-02-29 00:00",
             ],
         );
     }
@@ -1791,28 +1731,28 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2400-02-28T00:00:00+00:00",
-                "2300-02-27T00:00:00+00:00",
-                "2200-02-27T00:00:00+00:00",
-                "2100-02-27T00:00:00+00:00",
-                "2024-02-28T00:00:00+00:00",
-                "2020-02-28T00:00:00+00:00",
-                "2004-02-28T00:00:00+00:00",
-                "2000-02-28T00:00:00+00:00",
+                "2400-02-28 00:00",
+                "2300-02-27 00:00",
+                "2200-02-27 00:00",
+                "2100-02-27 00:00",
+                "2024-02-28 00:00",
+                "2020-02-28 00:00",
+                "2004-02-28 00:00",
+                "2000-02-28 00:00",
             ],
         );
 
         check_does_not_contain(
             cron,
             &[
-                "2400-02-29T00:00:00+00:00",
-                "2300-02-28T00:00:00+00:00",
-                "2200-02-28T00:00:00+00:00",
-                "2100-02-28T00:00:00+00:00",
-                "2024-02-29T00:00:00+00:00",
-                "2020-02-29T00:00:00+00:00",
-                "2004-02-29T00:00:00+00:00",
-                "2000-02-29T00:00:00+00:00",
+                "2400-02-29 00:00",
+                "2300-02-28 00:00",
+                "2200-02-28 00:00",
+                "2100-02-28 00:00",
+                "2024-02-29 00:00",
+                "2020-02-29 00:00",
+                "2004-02-29 00:00",
+                "2000-02-29 00:00",
             ],
         );
     }
@@ -1821,20 +1761,14 @@ mod tests {
     fn parse_check_offset_weekend_start_months() {
         let cron = "0 0 L-30W * *";
 
-        check_does_contain(
-            cron,
-            &["2021-05-3T00:00:00+00:00", "2022-01-3T00:00:00+00:00"],
-        );
+        check_does_contain(cron, &["2021-05-3 00:00", "2022-01-3 00:00"]);
     }
 
     #[test]
     fn parse_check_offset_weekend_start_months_beyond_days() {
         let cron = "0 0 L-28W FEB *";
 
-        check_does_not_contain(
-            cron,
-            &["2021-05-3T00:00:00+00:00", "2022-01-3T00:00:00+00:00"],
-        );
+        check_does_not_contain(cron, &["2021-05-3 00:00", "2022-01-3 00:00"]);
     }
 
     #[test]
@@ -1844,9 +1778,9 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2025-05-30T00:00:00+00:00", // Last day is a Saturday
-                "2021-05-31T00:00:00+00:00", // Last day is a Monday
-                "2020-05-29T00:00:00+00:00", // Last day is a Sunday
+                "2025-05-30 00:00", // Last day is a Saturday
+                "2021-05-31 00:00", // Last day is a Monday
+                "2020-05-29 00:00", // Last day is a Sunday
             ],
         );
     }
@@ -1858,9 +1792,9 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2025-05-30T00:00:00+00:00", // Offset last day is a Friday
-                "2021-05-31T00:00:00+00:00", // Offset last day is a Sunday
-                "2020-05-29T00:00:00+00:00", // Offset last day is a Saturday
+                "2025-05-30 00:00", // Offset last day is a Friday
+                "2021-05-31 00:00", // Offset last day is a Sunday
+                "2020-05-29 00:00", // Offset last day is a Saturday
             ],
         );
     }
@@ -1872,9 +1806,9 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2020-05-01T00:00:00+00:00", // First day is a Friday
-                "2022-05-02T00:00:00+00:00", // First day is a Sunday
-                "2021-05-03T00:00:00+00:00", // First day is a Saturday
+                "2020-05-01 00:00", // First day is a Friday
+                "2022-05-02 00:00", // First day is a Sunday
+                "2021-05-03 00:00", // First day is a Saturday
             ],
         )
     }
@@ -1886,22 +1820,22 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2020-01-25T00:00:00+00:00",
-                "2020-02-29T00:00:00+00:00",
-                "2020-03-28T00:00:00+00:00",
-                "2020-04-25T00:00:00+00:00",
-                "2020-05-30T00:00:00+00:00",
+                "2020-01-25 00:00",
+                "2020-02-29 00:00",
+                "2020-03-28 00:00",
+                "2020-04-25 00:00",
+                "2020-05-30 00:00",
             ],
         );
 
         check_does_not_contain(
             cron,
             &[
-                "2020-01-31T00:00:00+00:00",
-                "2020-02-28T00:00:00+00:00",
-                "2020-03-31T00:00:00+00:00",
-                "2020-04-30T00:00:00+00:00",
-                "2020-05-31T00:00:00+00:00",
+                "2020-01-31 00:00",
+                "2020-02-28 00:00",
+                "2020-03-31 00:00",
+                "2020-04-30 00:00",
+                "2020-05-31 00:00",
             ],
         )
     }
@@ -1913,21 +1847,21 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2020-02-29T00:00:00+00:00",
-                "2020-05-30T00:00:00+00:00",
-                "2020-08-29T00:00:00+00:00",
-                "2020-10-31T00:00:00+00:00",
+                "2020-02-29 00:00",
+                "2020-05-30 00:00",
+                "2020-08-29 00:00",
+                "2020-10-31 00:00",
             ],
         );
 
         check_does_not_contain(
             cron,
             &[
-                "2020-01-31T00:00:00+00:00",
-                "2020-02-28T00:00:00+00:00",
-                "2020-03-31T00:00:00+00:00",
-                "2020-04-30T00:00:00+00:00",
-                "2020-05-31T00:00:00+00:00",
+                "2020-01-31 00:00",
+                "2020-02-28 00:00",
+                "2020-03-31 00:00",
+                "2020-04-30 00:00",
+                "2020-05-31 00:00",
             ],
         )
     }
@@ -1940,12 +1874,12 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2020-01-01T00:00:00+00:00",
-                "2020-01-01T00:15:00+00:00",
-                "2020-01-01T00:30:00+00:00",
-                "2020-01-01T00:40:00+00:00",
-                "2020-01-01T00:45:00+00:00",
-                "2020-01-01T00:50:00+00:00",
+                "2020-01-01 00:00",
+                "2020-01-01 00:15",
+                "2020-01-01 00:30",
+                "2020-01-01 00:40",
+                "2020-01-01 00:45",
+                "2020-01-01 00:50",
             ],
         )
     }
@@ -1958,12 +1892,209 @@ mod tests {
         check_does_contain(
             cron,
             &[
-                "2020-01-01T20:00:00+00:00",
-                "2020-01-01T22:00:00+00:00",
-                "2020-01-01T00:00:00+00:00",
-                "2020-01-01T02:00:00+00:00",
-                "2020-01-01T04:00:00+00:00",
+                "2020-01-01 20:00",
+                "2020-01-01 22:00",
+                "2020-01-01 00:00",
+                "2020-01-01 02:00",
+                "2020-01-01 04:00",
             ],
         );
+    }
+
+    /// Tests for future time iteration
+    mod iter {
+        use super::*;
+
+        fn assert<'a, R: RangeBounds<&'a str>>(cron: &str, range: R, times: &[&str]) {
+            let cron = cron
+                .parse::<Cron>()
+                .expect("Failed to parse cron expression");
+            let start = match range.start_bound() {
+                Bound::Unbounded => Bound::Unbounded,
+                Bound::Included(start) => Bound::Included(
+                    Utc.datetime_from_str(start, FORMAT)
+                        .expect("Failed to parse start date"),
+                ),
+                Bound::Excluded(start) => Bound::Excluded(
+                    Utc.datetime_from_str(start, FORMAT)
+                        .expect("Failed to parse start date"),
+                ),
+            };
+            let end = match range.end_bound() {
+                Bound::Unbounded => Bound::Unbounded,
+                Bound::Included(end) => Bound::Included(
+                    Utc.datetime_from_str(end, FORMAT)
+                        .expect("Failed to parse start date"),
+                ),
+                Bound::Excluded(end) => Bound::Excluded(
+                    Utc.datetime_from_str(end, FORMAT)
+                        .expect("Failed to parse start date"),
+                ),
+            };
+
+            let results = cron.iter((start, end)).collect::<Vec<_>>();
+            let times = times
+                .into_iter()
+                .map(|&time| {
+                    Utc.datetime_from_str(time, FORMAT)
+                        .expect("Failed to parse expected date")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(times, results);
+        }
+
+        #[test]
+        fn inclusive_bound_range_has_one_item() {
+            assert(
+                "* * * * *",
+                (
+                    Bound::Included("2021-01-01 00:00"),
+                    Bound::Included("2021-01-01 00:00"),
+                ),
+                &["2021-01-01 00:00"],
+            );
+        }
+
+        #[test]
+        fn exclusive_bound_range_over_three_minutes_only_has_one() {
+            assert(
+                "* * * * *",
+                (
+                    Bound::Excluded("2021-01-01 00:00"),
+                    Bound::Excluded("2021-01-01 00:02"),
+                ),
+                &["2021-01-01 00:01"],
+            );
+        }
+
+        #[test]
+        fn cron_without_any_yields_none() {
+            assert(
+                "* * 31 2 *",
+                (Bound::<&str>::Unbounded, Bound::<&str>::Unbounded),
+                &[],
+            );
+        }
+
+        #[test]
+        fn start_beyond_end_bound_yields_none() {
+            assert(
+                "* * * * *",
+                (
+                    Bound::Included("2021-01-01 00:01"),
+                    Bound::Included("2021-01-01 00:00"),
+                ),
+                &[],
+            );
+        }
+
+        #[test]
+        fn start_max_exclusive_yields_none() {
+            assert(
+                "* * * * *",
+                (
+                    Bound::Excluded(&chrono::MAX_DATETIME.format(FORMAT).to_string().as_str()),
+                    Bound::Unbounded,
+                ),
+                &[],
+            )
+        }
+
+        #[test]
+        fn end_min_exclusive_yields_none() {
+            assert(
+                "* * * * *",
+                (
+                    Bound::Unbounded,
+                    Bound::Excluded(chrono::MIN_DATETIME.format(FORMAT).to_string().as_str()),
+                ),
+                &[],
+            )
+        }
+
+        #[test]
+        fn simple_10_min_step_over_30_min() {
+            assert(
+                "*/10 * * * *",
+                "1970-01-01 00:00".."1970-01-01 00:30",
+                // doesn't include 00:30 since .. is exclusive end
+                &["1970-01-01 00:00", "1970-01-01 00:10", "1970-01-01 00:20"],
+            )
+        }
+
+        #[test]
+        fn simple_10_min_step_over_30_min_inclusive() {
+            assert(
+                "*/10 * * * *",
+                "1970-01-01 00:00"..="1970-01-01 00:30",
+                &[
+                    "1970-01-01 00:00",
+                    "1970-01-01 00:10",
+                    "1970-01-01 00:20",
+                    "1970-01-01 00:30",
+                ],
+            )
+        }
+
+        #[test]
+        fn feb_edges() {
+            // fun edge cases in february
+            assert(
+                "0 0 29 2 *",
+                "1970-01-01 00:00".."2021-01-01 00:00",
+                &[
+                    "1972-02-29 00:00",
+                    "1976-02-29 00:00",
+                    "1980-02-29 00:00",
+                    "1984-02-29 00:00",
+                    "1988-02-29 00:00",
+                    "1992-02-29 00:00",
+                    "1996-02-29 00:00",
+                    "2000-02-29 00:00",
+                    "2004-02-29 00:00",
+                    "2008-02-29 00:00",
+                    "2012-02-29 00:00",
+                    "2016-02-29 00:00",
+                    "2020-02-29 00:00",
+                ],
+            );
+
+            assert(
+                "0 0 L-28W 2 *",
+                "1970-01-01 00:00".."2021-01-01 00:00",
+                &[
+                    "1972-02-01 00:00",
+                    "1976-02-02 00:00",
+                    "1980-02-01 00:00",
+                    "1984-02-01 00:00",
+                    "1988-02-01 00:00",
+                    "1992-02-03 00:00",
+                    "1996-02-01 00:00",
+                    "2000-02-01 00:00",
+                    "2004-02-02 00:00",
+                    "2008-02-01 00:00",
+                    "2012-02-01 00:00",
+                    "2016-02-01 00:00",
+                    "2020-02-03 00:00",
+                ],
+            );
+
+            assert(
+                "59 12 LW 2 *",
+                "1970-01-01 00:00".."1980-01-01 00:00",
+                &[
+                    "1970-02-27 12:59",
+                    "1971-02-26 12:59",
+                    "1972-02-29 12:59",
+                    "1973-02-28 12:59",
+                    "1974-02-28 12:59",
+                    "1975-02-28 12:59",
+                    "1976-02-27 12:59",
+                    "1977-02-28 12:59",
+                    "1978-02-28 12:59",
+                    "1979-02-28 12:59",
+                ],
+            );
+        }
     }
 }
