@@ -1001,6 +1001,33 @@ impl Cron {
         }
     }
 
+    /// Returns the number of minutes set in this cron expression.
+    ///
+    /// # Example
+    /// ```
+    /// use saffron::Cron;
+    /// use chrono::Duration;
+    ///
+    /// let cron: Cron = "*/10 * * * *".parse().expect("Couldn't parse expression!");
+    /// assert_eq!(cron.set_minutes_count(), 6);
+    ///
+    /// let cron: Cron = "0 0 * * *".parse().expect("Couldn't parse expression!");
+    /// assert_eq!(cron.set_minutes_count(), 1);
+    ///
+    /// let cron: Cron = "* * * * *".parse().expect("Couldn't parse expression!");
+    /// assert_eq!(cron.set_minutes_count(), 60);
+    /// ```
+    #[inline]
+    pub fn set_minutes_count(&self) -> u32 {
+        let mut count = 0;
+        let Minutes(mut minutes) = self.minutes;
+        while minutes != 0 {
+            count += (minutes & 1) as u32;
+            minutes >>= 1;
+        }
+        count
+    }
+
     /// Creates an iterator of date times that match with the cron value. This is short
     /// for `iter((Bound::Included(start), Bound::Unbounded))` or `iter(start..)`.
     ///
