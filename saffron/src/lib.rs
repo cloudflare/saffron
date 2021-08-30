@@ -1092,7 +1092,7 @@ impl Cron {
 
         CronTimesIter {
             cron: self,
-            bounds: front.zip(back).filter(|(start, end)| front <= back),
+            bounds: front.zip(back).filter(|(front, back)| front <= back),
         }
     }
 

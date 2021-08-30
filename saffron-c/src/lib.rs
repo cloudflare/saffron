@@ -58,7 +58,7 @@ pub unsafe extern "C" fn saffron_cron_free(c: *const Cron) {
 /// Returns a bool indicating if the cron value contains any matching times.
 #[no_mangle]
 pub unsafe extern "C" fn saffron_cron_any(c: *const Cron) -> bool {
-    (&*c).0.any()
+    (*c).0.any()
 }
 
 /// Returns a bool indicating if the cron value contains the given time in UTC non-leap seconds
