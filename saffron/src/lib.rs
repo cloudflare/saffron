@@ -54,11 +54,12 @@ trait TimePattern {
     fn contains(&self, date: DateTime<Utc>) -> bool;
 }
 
-const DBG_BAD_PATTERN: &str = "Value mapped out of range of valid bit patterns";
-
 macro_rules! debug_assert_pattern {
     ($pat:expr, $mask:expr) => {
-        debug_assert!(($pat & !($mask)) == 0, DBG_BAD_PATTERN)
+        debug_assert!(
+            ($pat & !($mask)) == 0,
+            "Value mapped out of range of valid bit patterns"
+        )
     };
 }
 
