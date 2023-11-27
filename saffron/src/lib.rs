@@ -1078,14 +1078,14 @@ impl Cron {
         }
 
         let front = match bounds.start_bound() {
-            Bound::Unbounded => Some(chrono::MIN_DATETIME),
+            Bound::Unbounded => Some(DateTime::<Utc>::MIN_UTC),
             Bound::Included(start) => Some(*start),
             Bound::Excluded(start) => next_minute(*start),
         }
         .map(minute_floor);
 
         let back = match bounds.end_bound() {
-            Bound::Unbounded => Some(chrono::MAX_DATETIME),
+            Bound::Unbounded => Some(DateTime::<Utc>::MAX_UTC),
             Bound::Included(end) => Some(*end),
             Bound::Excluded(end) => previous_minute(*end),
         }
@@ -1113,7 +1113,7 @@ impl Cron {
     pub fn next_from(&self, start: DateTime<Utc>) -> Option<DateTime<Utc>> {
         let start = minute_floor(start);
         if self.any() {
-            self.find_next(start, chrono::MAX_DATETIME)
+            self.find_next(start, DateTime::<Utc>::MAX_UTC)
         } else {
             None
         }
@@ -1134,7 +1134,7 @@ impl Cron {
     pub fn next_after(&self, start: DateTime<Utc>) -> Option<DateTime<Utc>> {
         let start = next_minute(minute_floor(start))?;
         if self.any() {
-            self.find_next(start, chrono::MAX_DATETIME)
+            self.find_next(start, DateTime::<Utc>::MAX_UTC)
         } else {
             None
         }
@@ -1935,7 +1935,7 @@ mod tests {
 
             let results = cron.iter((start, end)).collect::<Vec<_>>();
             let times = times
-                .into_iter()
+                .iter()
                 .map(|&time| {
                     Utc.datetime_from_str(time, FORMAT)
                         .expect("Failed to parse expected date")
@@ -1994,7 +1994,7 @@ mod tests {
             assert(
                 "* * * * *",
                 (
-                    Bound::Excluded(&chrono::MAX_DATETIME.format(FORMAT).to_string().as_str()),
+                    Bound::Excluded(&DateTime::<Utc>::MAX_UTC.format(FORMAT).to_string().as_str()),
                     Bound::Unbounded,
                 ),
                 &[],
@@ -2007,7 +2007,7 @@ mod tests {
                 "* * * * *",
                 (
                     Bound::Unbounded,
-                    Bound::Excluded(chrono::MIN_DATETIME.format(FORMAT).to_string().as_str()),
+                    Bound::Excluded(DateTime::<Utc>::MIN_UTC.format(FORMAT).to_string().as_str()),
                 ),
                 &[],
             )
