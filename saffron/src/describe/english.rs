@@ -87,7 +87,7 @@ impl English {
             ),
         })
     }
-    fn hour<'a>(&'a self, h: OrsExpr<Hour>) -> impl Display + 'a {
+    fn hour(&self, h: OrsExpr<Hour>) -> impl Display + '_ {
         display(move |f| match h {
             OrsExpr::One(hour) => write!(
                 f,

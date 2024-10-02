@@ -161,7 +161,7 @@ impl TryFrom<u8> for DayOfMonth {
 
     #[inline]
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        if value >= Self::MIN && value <= Self::MAX {
+        if (Self::MIN..=Self::MAX).contains(&value) {
             Ok(Self(value))
         } else {
             Err(ValueOutOfRangeError)
@@ -201,7 +201,7 @@ impl TryFrom<u8> for DayOfMonthOffset {
 
     #[inline]
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        if value >= Self::MIN && value <= Self::MAX {
+        if (Self::MIN..=Self::MAX).contains(&value) {
             Ok(Self(value))
         } else {
             Err(ValueOutOfRangeError)
@@ -281,7 +281,7 @@ impl TryFrom<u8> for Month {
 
     #[inline]
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        if value >= Self::MIN && value <= Self::MAX {
+        if (Self::MIN..=Self::MAX).contains(&value) {
             Ok(Self(value))
         } else {
             Err(ValueOutOfRangeError)
@@ -321,7 +321,7 @@ impl TryFrom<u8> for NthDay {
 
     #[inline]
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        if value >= Self::MIN && value <= Self::MAX {
+        if (Self::MIN..=Self::MAX).contains(&value) {
             Ok(Self(value))
         } else {
             Err(ValueOutOfRangeError)
@@ -717,11 +717,7 @@ where
 }
 
 /// Consumes a set of trailing ORS expressions
-fn tail_ors_exprs<'a, E, F>(
-    mut input: &'a str,
-    f: F,
-    mut exprs: Exprs<E>,
-) -> IResult<&'a str, Exprs<E>>
+fn tail_ors_exprs<E, F>(mut input: &str, f: F, mut exprs: Exprs<E>) -> IResult<&str, Exprs<E>>
 where
     E: ExprValue + TryFrom<u8, Error = ValueOutOfRangeError> + Ord + Copy,
     F: Fn(&str) -> IResult<&str, E>,
@@ -747,7 +743,6 @@ where
     F: Fn(&str) -> IResult<&str, E>,
 {
     move |mut input: &str| {
-        let expressions: Exprs<E>;
         // Attempt to read a `*`. If that succeeds,
         // try to read a `/` for a step expr.
         // If this isn't a step expr, return Expr::All,
@@ -755,7 +750,7 @@ where
         // list with an ors_expr.
         let star = opt(char('*'))(input)?;
         input = star.0;
-        if star.1.is_some() {
+        let expressions = if star.1.is_some() {
             let slash = opt(char('/'))(input)?;
             input = slash.0;
             // If there is no slash after this, just return All and expect the next
@@ -765,7 +760,7 @@ where
             }
             let step = step_digit::<E>()(input)?;
             input = step.0;
-            expressions = Exprs::new(OrsExpr::Step {
+            Exprs::new(OrsExpr::Step {
                 start: ExprValue::min(),
                 end: ExprValue::max(),
                 step: step.1,
@@ -773,8 +768,8 @@ where
         } else {
             let expr = ors_expr::<E, _>(&f)(input)?;
             input = expr.0;
-            expressions = Exprs::new(expr.1)
-        }
+            Exprs::new(expr.1)
+        };
 
         let (input, exprs) = tail_ors_exprs(input, &f, expressions)?;
 
